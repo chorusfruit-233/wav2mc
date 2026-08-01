@@ -10,7 +10,35 @@ from .config import AudioConfig
 from .grains import residual_grain
 
 
-def synthesize_preview(frames: list[AudioFrame], config: AudioConfig) -> np.ndarray:
+def _is_stereo(frames: list[AudioFrame]) -> bool:
+    return any(
+        component.pan != 0.0
+        for frame in frames
+        for component in frame.all_components
+    )
+
+
+def _add_panned(
+    target: np.ndarray,
+    values: np.ndarray,
+    pan: float,
+) -> None:
+    if target.ndim == 1:
+        target += values
+    elif pan < 0.0:
+        target[:, 0] += values
+    elif pan > 0.0:
+        target[:, 1] += values
+    else:
+        target[:, 0] += values
+        target[:, 1] += values
+
+
+def synthesize_preview(
+    frames: list[AudioFrame],
+    config: AudioConfig,
+    stereo: bool | None = None,
+) -> np.ndarray:
     n = config.window_size
     hop = config.hop_size
     window = sqrt_hann(n)
@@ -23,17 +51,26 @@ def synthesize_preview(frames: list[AudioFrame], config: AudioConfig) -> np.ndar
         return values.astype(np.float32)
 
     output_size = max(n, (max(0, len(frames) - 1) * hop) + n)
-    output = np.zeros(output_size, dtype=np.float32)
+    if stereo is None:
+        stereo = _is_stereo(frames)
+    output_shape = (output_size, 2) if stereo else output_size
+    output = np.zeros(output_shape, dtype=np.float32)
 
     for frame in frames:
         start = frame.index * hop
         end = start + n
         for component in frame.components:
-            output[start:end] += component.amplitude * grain(
-                component.frequency,
-                component.phase_index,
+            _add_panned(
+                output[start:end],
+                component.amplitude
+                * grain(component.frequency, component.phase_index),
+                component.pan,
             )
-        output[start:end] += synthesize_residual_frame(frame, config)
+        output[start:end] += synthesize_residual_frame(
+            frame,
+            config,
+            stereo=stereo,
+        )
 
     return output
 
@@ -42,19 +79,28 @@ def synthesize_residual_frame(
     frame: AudioFrame,
     config: AudioConfig,
     kind: str | None = None,
+    stereo: bool | None = None,
 ) -> np.ndarray:
-    output = np.zeros(config.window_size, dtype=np.float32)
+    if stereo is None:
+        stereo = any(component.pan != 0.0 for component in frame.all_components)
+    output_shape = (config.window_size, 2) if stereo else config.window_size
+    output = np.zeros(output_shape, dtype=np.float32)
     for component in frame.residual_components:
         if kind is not None and component.kind != kind:
             continue
-        output += component.amplitude * residual_grain(
-            config.sample_rate,
-            config.window_size,
-            component.band_index,
-            component.low_frequency,
-            component.high_frequency,
-            component.variant,
-            component.kind,
+        _add_panned(
+            output,
+            component.amplitude
+            * residual_grain(
+                config.sample_rate,
+                config.window_size,
+                component.band_index,
+                component.low_frequency,
+                component.high_frequency,
+                component.variant,
+                component.kind,
+            ),
+            component.pan,
         )
     return output
 

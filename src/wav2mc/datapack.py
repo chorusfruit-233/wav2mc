@@ -10,6 +10,17 @@ from .loudness import minecraft_command_volume
 from .utils import pack_metadata, temporary_directory, write_json, zip_directory
 
 
+STEREO_SOURCE_OFFSET = 0.75
+
+
+def _sound_coordinates(pan: float) -> str:
+    if pan < 0.0:
+        return f"^{STEREO_SOURCE_OFFSET:g} ^ ^"
+    if pan > 0.0:
+        return f"^{-STEREO_SOURCE_OFFSET:g} ^ ^"
+    return "~ ~ ~"
+
+
 def _layout_directories(layout: str) -> tuple[str, str]:
     if layout == "modern":
         return "function", "tags/function"
@@ -86,6 +97,11 @@ def build_data_pack(
     calibration.validate()
     function_dir, tag_dir = _layout_directories(layout)
     frame_count = len(frames)
+    stereo = any(
+        component.pan != 0.0
+        for frame in frames
+        for component in frame.all_components
+    )
 
     with temporary_directory("wav2mc-datapack-") as root:
         write_json(
@@ -106,6 +122,10 @@ def build_data_pack(
                 "frames": frame_count,
                 "tick_rate": 20,
                 "category": category,
+                "channels": 2 if stereo else 1,
+                "stereo_source_offset_blocks": (
+                    STEREO_SOURCE_OFFSET if stereo else 0.0
+                ),
                 "bank_grain_level": bank_grain_level,
                 "loudness_calibration": {
                     "minecraft_gain": calibration.minecraft_gain,
@@ -129,8 +149,10 @@ def build_data_pack(
                     calibration,
                 )
                 lines.append(
-                    "execute as @a[tag=wav2mc_listener] at @s run playsound "
-                    f"{bank_namespace}:{event} {category} @s ~ ~ ~ "
+                    "execute as @a[tag=wav2mc_listener] at @s anchored eyes "
+                    "run playsound "
+                    f"{bank_namespace}:{event} {category} @s "
+                    f"{_sound_coordinates(component.pan)} "
                     f"{volume:.6f} 1.0 0.0"
                 )
             for component in frame.residual_components:
@@ -145,8 +167,10 @@ def build_data_pack(
                     calibration,
                 )
                 lines.append(
-                    "execute as @a[tag=wav2mc_listener] at @s run playsound "
-                    f"{bank_namespace}:{event} {category} @s ~ ~ ~ "
+                    "execute as @a[tag=wav2mc_listener] at @s anchored eyes "
+                    "run playsound "
+                    f"{bank_namespace}:{event} {category} @s "
+                    f"{_sound_coordinates(component.pan)} "
                     f"{volume:.6f} 1.0 0.0"
                 )
             if not lines:

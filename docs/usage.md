@@ -56,7 +56,7 @@ wav2mc gui /path/to/audio.m4s --output-dir output
 
 重新执行 `python -m pip install -e .` 后，也可以运行独立入口 `wav2mc-gui`。
 
-“音频转换”页提供输入文件、输出目录、歌曲名称、音轨索引、质量模式、dB 增益和心理声学掩蔽。增益范围为 -24～+12 dB，可直接输入或用箭头按 0.5 dB 调整；“归零”恢复到 0 dB（1.00x）。选择 `normal` 后生成的数据包使用 `wav2mc_normal` namespace，必须配合相同模式的资源包。
+“音频转换”页提供输入文件、输出目录、歌曲名称、音轨索引、质量模式、dB 增益、立体声保留和心理声学掩蔽。增益范围为 -24～+12 dB，可直接输入或用箭头按 0.5 dB 调整；“归零”恢复到 0 dB（1.00x）。选择 `normal` 后生成的数据包使用 `wav2mc_normal` namespace，必须配合相同模式的资源包。
 
 “资源包”页共享当前质量模式，可以只生成当前模式，或一次生成四个推荐模式。转换和资源包生成在后台线程执行；运行期间操作按钮会禁用，完成路径和 FFmpeg 错误会显示在窗口底部。
 
@@ -77,6 +77,18 @@ ffmpeg -decoders
 ```
 
 文件无音轨、损坏或缺少对应解码器时，CLI 会返回 FFmpeg 的具体失败原因。
+
+### 立体声输入
+
+默认 `--stereo` 会保留最多两个声道。左右声道分别执行正弦、噪声和瞬态分析，`*_preview.wav` 写成真正的双声道文件；数据包使用玩家本地坐标，在左侧 `^0.75 ^ ^` 和右侧 `^-0.75 ^ ^` 播放对应的单声道资源颗粒。玩家转身时声场会跟随朝向。
+
+双单声道输入会自动折叠为单声道。需要降低分析时间和游戏内命令负载时使用：
+
+```bash
+wav2mc convert input.wav --mode normal --no-stereo
+```
+
+立体声只改变分析结果和数据包，不增加资源包事件，因此无需为它单独生成资源包。Minecraft 客户端使用空间音频混合两个声源，实际串音和声像宽度会受“定向音频”、耳机/扬声器设置及声音引擎影响。
 
 ## 推荐快速流程
 
@@ -124,7 +136,7 @@ wav2mc convert input.wav \
 
 `--mode normal`（等价于 `--device-profile normal`）会同时选择 60–12000 Hz 自适应网格、12 相位、`normal` 质量和 `wav2mc_normal` namespace。不要混用不同模式的资源包与转换结果。
 
-转换器会通过 FFmpeg 解码第一条音轨，然后单声道化、重采样并带通滤波。
+转换器会通过 FFmpeg 解码第一条音轨，然后保留立体声（或按要求下混）、重采样并带通滤波。
 
 ### 3. 检查输出
 
@@ -220,7 +232,10 @@ wav2mc convert input.wav \
 - `--mode voice|normal|high|experimental`：同时匹配资源包频率、相位、质量和 namespace，日常使用优先选择。
 - `--quality voice|normal|high|experimental`：改变正弦、噪声和瞬态预算；不会自动切换资源包。
 - `--gain`：转换增益，必须大于 0。输出峰值仍会受安全缩放限制。
+- `--stereo` / `--no-stereo`：默认保留立体声；关闭后在分析前下混为单声道。
 - `--category`：Minecraft 声音分类，默认 `record`。
+
+立体声会让每帧预算和 `/playsound` 命令数接近翻倍。游戏内优先使用 `normal` 或 `high`；`experimental` 立体声可能超过部分客户端能稳定处理的声音通道和命令负载。
 
 `normal` 每帧的 20 个分量不是全频段统一竞争，而是采用硬预算：
 
@@ -316,6 +331,7 @@ wav2mc convert input.wav \
 - `audio_config.frequency_grid`、`frequency_bands` 和 `frequency_count`：实际网格与资源数量。
 - `quality_profile.band_budgets`：每个频段的硬分量预算。
 - `component_model`：三层的平均与最大组件数量。
+- `input_channels` / `output_channels` 和 `stereo`：实际声道数、是否保留输入立体声，以及游戏内左右声源偏移。
 - `layer_scales.tone`：正弦层的全局安全缩放。
 - `layer_scales.residual.noise` / `transient`：两个残差总线各自的 `gain_limit`、均值、最小值、最大值、P10 和 P90；`layer_scales.residual.release_ms` 是共同的恢复时间。
 - `preview_peak`：本地预览的峰值。

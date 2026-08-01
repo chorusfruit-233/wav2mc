@@ -73,3 +73,39 @@ def test_data_pack_writes_calibrated_command_volume(tmp_path: Path) -> None:
     assert metadata["loudness_calibration"]["volume_exponent"] == 2.0
     assert pack_metadata["pack"]["min_format"] == [107, 1]
     assert pack_metadata["pack"]["max_format"] == [107, 1]
+
+
+def test_data_pack_positions_stereo_sources_relative_to_listener(
+    tmp_path: Path,
+) -> None:
+    frames = [
+        AudioFrame(
+            index=0,
+            components=(
+                Component(440, 0, 0.2, pan=-1.0),
+                Component(660, 0, 0.2, pan=1.0),
+            ),
+        )
+    ]
+    target = tmp_path / "stereo.zip"
+
+    build_data_pack(
+        target,
+        frames,
+        namespace="stereo",
+        bank_namespace="wav2mc",
+        pack_format=DEFAULT_DATA_PACK_FORMAT,
+        layout="modern",
+    )
+
+    with zipfile.ZipFile(target) as archive:
+        command = archive.read(
+            "data/stereo/function/frame/000000.mcfunction"
+        ).decode()
+        metadata = json.loads(archive.read("wav2mc-song.json"))
+
+    assert "grain.f0440.p00 record @s ^0.75 ^ ^" in command
+    assert "grain.f0660.p00 record @s ^-0.75 ^ ^" in command
+    assert command.count("at @s anchored eyes run playsound") == 2
+    assert metadata["channels"] == 2
+    assert metadata["stereo_source_offset_blocks"] == 0.75

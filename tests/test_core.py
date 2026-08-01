@@ -2,7 +2,7 @@ from pathlib import Path
 
 import numpy as np
 
-from wav2mc.analysis import analyse_audio
+from wav2mc.analysis import AudioFrame, Component, analyse_audio
 from wav2mc.audio import sqrt_hann
 from wav2mc.config import (
     DEFAULT_DATA_PACK_FORMAT,
@@ -11,12 +11,33 @@ from wav2mc.config import (
     QualityProfile,
 )
 from wav2mc.datapack import build_data_pack
+from wav2mc.preview import synthesize_preview
 
 
 def test_window_endpoints_are_zero() -> None:
     window = sqrt_hann(4800)
     assert window[0] == 0.0
     assert window[-1] == 0.0
+
+
+def test_stereo_preview_routes_components_to_separate_channels() -> None:
+    config = AudioConfig(max_frequency=1000)
+    frame = AudioFrame(
+        index=0,
+        components=(
+            Component(440, 0, 0.5, pan=-1.0),
+            Component(660, 0, 0.5, pan=1.0),
+        ),
+    )
+
+    preview = synthesize_preview([frame], config)
+
+    assert preview.shape == (config.window_size, 2)
+    frequencies = np.fft.rfftfreq(config.window_size, 1.0 / config.sample_rate)
+    left_peak = frequencies[int(np.argmax(np.abs(np.fft.rfft(preview[:, 0]))))]
+    right_peak = frequencies[int(np.argmax(np.abs(np.fft.rfft(preview[:, 1]))))]
+    assert left_peak == 440.0
+    assert right_peak == 660.0
 
 
 def test_detects_440_hz() -> None:

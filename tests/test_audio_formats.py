@@ -8,7 +8,7 @@ import numpy as np
 import pytest
 import soundfile as sf
 
-from wav2mc.audio import load_mono, preprocess_audio
+from wav2mc.audio import load_audio, load_mono, preprocess_audio
 from wav2mc.cli import main
 from wav2mc.utils import ensure_command
 
@@ -109,8 +109,88 @@ def test_convert_accepts_non_wav_input(tmp_path: Path) -> None:
     assert report_path.is_file()
     report = json.loads(report_path.read_text())
     assert report["input_audio_stream"] == 0
+    assert report["input_channels"] == 2
+    assert report["output_channels"] == 2
+    assert report["stereo"]["enabled"] is True
     assert report["component_model"]["hybrid_residual_enabled"] is True
     assert set(report["layer_scales"]) == {"tone", "residual"}
+    preview, _ = sf.read(output_dir / "encoded_input_preview.wav", always_2d=True)
+    assert preview.shape[1] == 2
+
+
+def test_preprocess_preserves_stereo_channels(tmp_path: Path) -> None:
+    source = _write_encoded_tone(tmp_path, "m4a", "aac")
+    decoded = tmp_path / "stereo.wav"
+
+    preprocess_audio(
+        source,
+        decoded,
+        sample_rate=16_000,
+        low_frequency=80,
+        high_frequency=3000,
+        channels=2,
+    )
+    audio = load_audio(decoded, expected_sample_rate=16_000)
+
+    assert audio.ndim == 2
+    assert audio.shape[1] == 2
+    frequencies = np.fft.rfftfreq(audio.shape[0], 1.0 / 16_000)
+    left_peak = frequencies[int(np.argmax(np.abs(np.fft.rfft(audio[:, 0]))))]
+    right_peak = frequencies[int(np.argmax(np.abs(np.fft.rfft(audio[:, 1]))))]
+    assert abs(left_peak - 440.0) < 5.0
+    assert abs(right_peak - 660.0) < 5.0
+
+
+def test_preprocess_collapses_dual_mono_input(tmp_path: Path) -> None:
+    sample_rate = 16_000
+    time = np.arange(sample_rate // 2) / sample_rate
+    source = tmp_path / "mono.wav"
+    sf.write(source, 0.5 * np.cos(2 * np.pi * 440 * time), sample_rate)
+    decoded = tmp_path / "dual_mono.wav"
+
+    preprocess_audio(
+        source,
+        decoded,
+        sample_rate=sample_rate,
+        low_frequency=80,
+        high_frequency=3000,
+        channels=2,
+    )
+
+    assert load_audio(decoded, sample_rate).ndim == 1
+
+
+def test_convert_can_downmix_stereo_input(tmp_path: Path) -> None:
+    source = _write_encoded_tone(tmp_path, "m4a", "aac")
+    output_dir = tmp_path / "mono_output"
+
+    exit_code = main(
+        [
+            "convert",
+            str(source),
+            "--name",
+            "mono_input",
+            "--output-dir",
+            str(output_dir),
+            "--quality",
+            "low",
+            "--max-frequency",
+            "1000",
+            "--frequency-step",
+            "40",
+            "--phases",
+            "4",
+            "--no-stereo",
+        ]
+    )
+
+    assert exit_code == 0
+    report = json.loads(
+        (output_dir / "mono_input_analysis.json").read_text()
+    )
+    assert report["input_channels"] == 1
+    assert report["output_channels"] == 1
+    assert report["stereo"]["preserve_input"] is False
 
 
 def test_ffmpeg_probes_content_without_known_extension(tmp_path: Path) -> None:

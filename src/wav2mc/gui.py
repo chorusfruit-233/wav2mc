@@ -158,6 +158,7 @@ class Wav2McApp:
         self.gain_db_var = tk.StringVar(value="0.0")
         self.gain_text_var = tk.StringVar(value="1.00x")
         self.masking_var = tk.BooleanVar(value=True)
+        self.stereo_var = tk.BooleanVar(value=True)
         self.bank_output_var = tk.StringVar(value="output/device_banks")
         self.mode_summary_var = tk.StringVar()
         self.status_var = tk.StringVar(value="就绪")
@@ -414,8 +415,17 @@ class Wav2McApp:
             variable=self.masking_var,
         ).grid(row=2, column=1, sticky="w", pady=5)
 
+        ttk.Label(options, text="声道", style="Panel.TLabel").grid(
+            row=3, column=0, sticky="w", padx=(0, 12), pady=5
+        )
+        ttk.Checkbutton(
+            options,
+            text="保留立体声（会增加命令负载）",
+            variable=self.stereo_var,
+        ).grid(row=3, column=1, sticky="w", pady=5)
+
         ttk.Separator(options).grid(
-            row=3, column=0, columnspan=2, sticky="ew", pady=(10, 8)
+            row=4, column=0, columnspan=2, sticky="ew", pady=(10, 8)
         )
         ttk.Label(
             options,
@@ -423,7 +433,7 @@ class Wav2McApp:
             style="PanelMuted.TLabel",
             wraplength=650,
             justify=tk.LEFT,
-        ).grid(row=4, column=0, columnspan=2, sticky="w")
+        ).grid(row=5, column=0, columnspan=2, sticky="w")
 
         actions = ttk.Frame(tab)
         actions.grid(row=1, column=0, sticky="ew", pady=(12, 0))
@@ -596,6 +606,7 @@ class Wav2McApp:
             stream = self.audio_stream_var.get()
             gain_db = float(self.gain_db_var.get())
             masking = self.masking_var.get()
+            preserve_stereo = self.stereo_var.get()
             config = mode_audio_config(mode)
         except (tk.TclError, ValueError) as exc:
             messagebox.showerror("参数错误", str(exc), parent=self.root)
@@ -633,6 +644,7 @@ class Wav2McApp:
                 psychoacoustic_masking=masking,
                 device_profile=mode,
                 audio_stream=stream,
+                preserve_stereo=preserve_stereo,
             )
 
         self.last_output_dir = output_dir

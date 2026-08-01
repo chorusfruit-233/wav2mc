@@ -14,6 +14,7 @@ class Component:
     frequency: int
     phase_index: int
     amplitude: float
+    pan: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -24,6 +25,7 @@ class ResidualComponent:
     high_frequency: int
     variant: int
     amplitude: float
+    pan: float = 0.0
 
 
 @dataclass(frozen=True)

@@ -6,7 +6,7 @@ from pathlib import Path
 import numpy as np
 
 from .analysis import AudioFrame, analyse_audio, scale_frame_residuals
-from .audio import load_mono, peak_normalize, preprocess_audio, write_wav
+from .audio import load_audio, peak_normalize, preprocess_audio, write_wav
 from .config import (
     DEFAULT_MINECRAFT_VERSION,
     AudioConfig,
@@ -14,7 +14,7 @@ from .config import (
     QualityProfile,
     audio_config_metadata,
 )
-from .datapack import build_data_pack
+from .datapack import STEREO_SOURCE_OFFSET, build_data_pack
 from .loudness import (
     maximum_reproducible_amplitude,
     minecraft_command_volume,
@@ -33,8 +33,6 @@ RESIDUAL_GAIN_LIMITS = {
     "transient": 0.40,
 }
 RESIDUAL_LAYER_ORDER = ("transient", "noise")
-
-
 def _maximum_additive_scale(
     base: np.ndarray,
     addition: np.ndarray,
@@ -100,7 +98,12 @@ def _residual_frame_scales(
                     maximum_supported / maximum_component,
                 )
 
-            addition = synthesize_residual_frame(frame, config, kind=kind)
+            addition = synthesize_residual_frame(
+                frame,
+                config,
+                kind=kind,
+                stereo=tone_preview.ndim == 2,
+            )
             base = tone_scale * tone_preview[start:end] + residual_mix[start:end]
             raw_limit = _maximum_additive_scale(
                 base,
@@ -146,6 +149,58 @@ def _scale_statistics(
     }
 
 
+def _analyse_channels(
+    audio: np.ndarray,
+    config: AudioConfig,
+    quality: QualityProfile,
+    psychoacoustic_masking: bool,
+) -> list[AudioFrame]:
+    if audio.ndim == 1:
+        return analyse_audio(
+            audio,
+            config,
+            quality,
+            psychoacoustic_masking=psychoacoustic_masking,
+        )
+    if audio.ndim != 2 or audio.shape[1] != 2:
+        raise ValueError("Audio must be mono or stereo")
+
+    channel_frames = [
+        analyse_audio(
+            audio[:, channel],
+            config,
+            quality,
+            psychoacoustic_masking=psychoacoustic_masking,
+        )
+        for channel in range(2)
+    ]
+    if len(channel_frames[0]) != len(channel_frames[1]):
+        raise ValueError("Stereo channel analysis produced mismatched frame counts")
+
+    frames = []
+    for left, right in zip(*channel_frames, strict=True):
+        frames.append(
+            AudioFrame(
+                index=left.index,
+                components=(
+                    tuple(replace(component, pan=-1.0) for component in left.components)
+                    + tuple(replace(component, pan=1.0) for component in right.components)
+                ),
+                residual_components=(
+                    tuple(
+                        replace(component, pan=-1.0)
+                        for component in left.residual_components
+                    )
+                    + tuple(
+                        replace(component, pan=1.0)
+                        for component in right.residual_components
+                    )
+                ),
+            )
+        )
+    return frames
+
+
 def convert_audio(
     source: Path,
     output_dir: Path,
@@ -162,6 +217,7 @@ def convert_audio(
     psychoacoustic_masking: bool = True,
     device_profile: str | None = None,
     audio_stream: int = 0,
+    preserve_stereo: bool = True,
 ) -> dict[str, Path]:
     calibration = loudness_calibration or LoudnessCalibration()
     calibration.validate()
@@ -192,18 +248,20 @@ def convert_audio(
             low_frequency=max(20, config.min_frequency // 2),
             high_frequency=min(config.max_frequency, config.sample_rate // 2 - 100),
             audio_stream=audio_stream,
+            channels=2 if preserve_stereo else 1,
         )
-        audio = load_mono(decoded, config.sample_rate)
+        audio = load_audio(decoded, config.sample_rate)
         audio = peak_normalize(audio, target_peak=0.92)
 
-    frames = analyse_audio(
+    frames = _analyse_channels(
         audio,
         config,
         quality,
-        psychoacoustic_masking=psychoacoustic_masking,
+        psychoacoustic_masking,
     )
     tone_frames = [replace(frame, residual_components=()) for frame in frames]
-    tone_preview = synthesize_preview(tone_frames, config)
+    stereo = audio.ndim == 2
+    tone_preview = synthesize_preview(tone_frames, config, stereo=stereo)
     tone_scale = calculate_safe_scale(
         tone_preview,
         target_peak=0.88,
@@ -240,7 +298,7 @@ def convert_audio(
         tone_scale,
         residual_scales,
     )
-    preview = synthesize_preview(target_frames, config)
+    preview = synthesize_preview(target_frames, config, stereo=stereo)
     write_wav(preview_path, preview, config.sample_rate)
 
     build_data_pack(
@@ -310,8 +368,17 @@ def convert_audio(
         "source": report_source,
         "input_audio_stream": audio_stream,
         "song_namespace": namespace,
-        "input_duration_seconds": round(audio.size / config.sample_rate, 6),
-        "output_duration_seconds": round(preview.size / config.sample_rate, 6),
+        "input_duration_seconds": round(audio.shape[0] / config.sample_rate, 6),
+        "output_duration_seconds": round(preview.shape[0] / config.sample_rate, 6),
+        "input_channels": 2 if audio.ndim == 2 else 1,
+        "output_channels": 2 if preview.ndim == 2 else 1,
+        "stereo": {
+            "enabled": audio.ndim == 2,
+            "preserve_input": preserve_stereo,
+            "minecraft_source_offset_blocks": (
+                STEREO_SOURCE_OFFSET if audio.ndim == 2 else 0.0
+            ),
+        },
         "frame_count": len(frames),
         "tick_rate": 20,
         "quality": quality.name,

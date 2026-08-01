@@ -23,10 +23,13 @@ def preprocess_audio(
     low_frequency: int,
     high_frequency: int,
     audio_stream: int = 0,
+    channels: int = 1,
 ) -> None:
-    """Decode any FFmpeg-supported input into mono PCM WAV."""
+    """Decode any FFmpeg-supported input into mono or stereo PCM WAV."""
     if audio_stream < 0:
         raise ValueError("audio_stream must not be negative")
+    if channels not in (1, 2):
+        raise ValueError("channels must be 1 or 2")
     ffmpeg = ensure_command("ffmpeg")
     target.parent.mkdir(parents=True, exist_ok=True)
     audio_filter = f"highpass=f={low_frequency},lowpass=f={high_frequency}"
@@ -45,7 +48,7 @@ def preprocess_audio(
         "-sn",
         "-dn",
         "-ac",
-        "1",
+        str(channels),
         "-ar",
         str(sample_rate),
         "-af",
@@ -69,18 +72,27 @@ def preprocess_audio(
         ) from exc
 
 
-def load_mono(path: Path, expected_sample_rate: int) -> np.ndarray:
-    audio, sample_rate = sf.read(path, dtype="float32", always_2d=False)
+def load_audio(path: Path, expected_sample_rate: int) -> np.ndarray:
+    audio, sample_rate = sf.read(path, dtype="float32", always_2d=True)
     if sample_rate != expected_sample_rate:
         raise ValueError(
             f"Expected {expected_sample_rate} Hz after preprocessing, got {sample_rate} Hz"
         )
-    if audio.ndim == 2:
-        audio = audio.mean(axis=1)
     audio = np.asarray(audio, dtype=np.float32)
     if not np.all(np.isfinite(audio)):
         raise ValueError("Input contains NaN or infinite samples")
+    if audio.shape[1] == 1:
+        return audio[:, 0]
+    if audio.shape[1] != 2:
+        raise ValueError("Decoded audio must contain one or two channels")
+    if np.array_equal(audio[:, 0], audio[:, 1]):
+        return audio[:, 0]
     return audio
+
+
+def load_mono(path: Path, expected_sample_rate: int) -> np.ndarray:
+    audio = load_audio(path, expected_sample_rate)
+    return audio.mean(axis=1) if audio.ndim == 2 else audio
 
 
 def peak_normalize(audio: np.ndarray, target_peak: float = 0.92) -> np.ndarray:

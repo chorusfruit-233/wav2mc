@@ -195,6 +195,12 @@ def build_parser() -> argparse.ArgumentParser:
     convert_parser.add_argument("--bank-namespace", default=None)
     convert_parser.add_argument("--category", default="record")
     convert_parser.add_argument("--gain", type=float, default=1.0)
+    convert_parser.add_argument(
+        "--stereo",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Preserve stereo input; --no-stereo downmixes to mono",
+    )
     convert_parser.add_argument("--bank-grain-level", type=float, default=1.0)
     convert_parser.add_argument(
         "--device-profile",
@@ -327,6 +333,7 @@ def main(argv: list[str] | None = None) -> int:
                 psychoacoustic_masking=args.psychoacoustic_masking,
                 device_profile=args.device_profile,
                 audio_stream=args.audio_stream,
+                preserve_stereo=args.stereo,
             )
             for label, path in outputs.items():
                 print(f"{label}: {path.resolve()}")
