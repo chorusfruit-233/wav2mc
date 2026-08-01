@@ -61,34 +61,38 @@ wav2mc bank-build-set --output-dir output/device_banks
 会生成：
 
 ```text
-output/device_banks/wav2mc_low_sine_bank.zip
+output/device_banks/wav2mc_voice_sine_bank.zip
 output/device_banks/wav2mc_normal_sine_bank.zip
 output/device_banks/wav2mc_high_sine_bank.zip
+output/device_banks/wav2mc_experimental_sine_bank.zip
 output/device_banks/wav2mc-device-packs.json
 ```
 
-| 档位 | 频率范围 | 步长 | 相位数 | 每帧最多分量 | 用途 |
-| --- | --- | ---: | ---: | ---: | --- |
-| `low` | 80–2000 Hz | 40 Hz | 8 | 8 | 性能较低的客户端 |
-| `normal` | 80–4000 Hz | 20 Hz | 8 | 12 | 推荐默认选择 |
-| `high` | 80–8000 Hz | 20 Hz | 16 | 20 | 更高音质和命令负载 |
+| 模式 | 频率范围 | 相位数 | 每帧最多分量 | 用途 |
+| --- | --- | ---: | ---: | --- |
+| `voice` | 80–8000 Hz | 8 | 12 | 语音、较低客户端负载 |
+| `normal` | 60–12000 Hz | 12 | 20 | 普通音乐，推荐默认选择 |
+| `high` | 40–16000 Hz | 16 | 24 | 更完整的音乐细节 |
+| `experimental` | 20–20000 Hz | 16 | 32 | 最大频宽和命令负载 |
 
 可以只生成需要的档位：
 
 ```bash
-wav2mc bank-build-set --profiles low normal
+wav2mc bank-build-set --profiles voice normal
 ```
+
+为兼容旧命令仍保留 `low`，但默认资源包集不再生成它。
 
 ### 2. 用同一档位转换音频
 
 ```bash
 wav2mc convert input.wav \
   --name demo_song \
-  --device-profile normal \
+  --mode normal \
   --output-dir output
 ```
 
-`--device-profile normal` 会同时选择 4000 Hz 上限、20 Hz 步长、8 相位、`normal` 质量和 `wav2mc_normal` namespace。不要用 `low` 资源包播放 `normal` 或 `high` 转换结果。
+`--mode normal`（等价于 `--device-profile normal`）会同时选择 60–12000 Hz 自适应网格、12 相位、`normal` 质量和 `wav2mc_normal` namespace。不要混用不同模式的资源包与转换结果。
 
 转换器会通过 FFmpeg 解码第一条音轨，然后单声道化、重采样并带通滤波。
 
@@ -125,7 +129,31 @@ output/demo_song_analysis.json
 
 ## 自定义资源包
 
-不使用设备档位时，可完全控制频率银行：
+不使用设备模式时，可完全控制频率银行。默认自适应网格为：
+
+| 频率范围 | 间隔 |
+| --- | ---: |
+| 20–1000 Hz | 20 Hz |
+| 1000–4000 Hz | 40 Hz |
+| 4000–8000 Hz | 80 Hz |
+| 8000–12000 Hz | 160 Hz |
+| 12000–20000 Hz | 320 Hz |
+
+完整网格包含 225 个频点，比在全频段保持 20 Hz 间隔小得多。频段边界只生成一次；如果自定义上限不落在网格上，实际最高频点是上限以下最后一个网格点。例如 `high` 截止于 16000 Hz，最后一个频点为 15840 Hz。
+
+生成自适应网格资源包：
+
+```bash
+wav2mc bank-build \
+  --output output/custom_bank.zip \
+  --namespace custom_bank \
+  --min-frequency 80 \
+  --max-frequency 12000 \
+  --frequency-grid adaptive \
+  --phases 16
+```
+
+如需复现旧版均匀 20 Hz 网格，显式提供 `--frequency-step` 即可切换，也可以同时指定 `--frequency-grid uniform`：
 
 ```bash
 wav2mc bank-build \
@@ -133,6 +161,7 @@ wav2mc bank-build \
   --namespace custom_bank \
   --min-frequency 100 \
   --max-frequency 6000 \
+  --frequency-grid uniform \
   --frequency-step 20 \
   --phases 16 \
   --grain-level 1.0
@@ -146,20 +175,33 @@ wav2mc convert input.wav \
   --bank-namespace custom_bank \
   --min-frequency 100 \
   --max-frequency 6000 \
+  --frequency-grid uniform \
   --frequency-step 20 \
   --phases 16 \
   --bank-grain-level 1.0
 ```
 
-必须匹配的参数包括 `sample-rate`、`grain-ms`、`hop-ms`、频率范围、频率步长、相位数、颗粒音量和 namespace。不匹配时通常会出现缺失声音事件、音量错误或频率缺口。
+必须匹配的参数包括 `sample-rate`、`grain-ms`、`hop-ms`、频率范围、网格类型、频率步长（均匀网格）、相位数、颗粒音量和 namespace。不匹配时通常会出现缺失声音事件、音量错误或频率缺口。
 
 ## 转换参数
 
 ### 质量和性能
 
-- `--quality low|normal|high`：分别限制每帧最多 8、12、20 个分量。档位越高，保留的细节和每秒 `/playsound` 命令越多。
+- `--mode voice|normal|high|experimental`：同时匹配资源包频率、相位、质量和 namespace，日常使用优先选择。
+- `--quality voice|normal|high|experimental`：只改变选峰预算，分别限制每帧最多 12、20、24、32 个分量；不会自动切换资源包。
 - `--gain`：转换增益，必须大于 0。输出峰值仍会受安全缩放限制。
 - `--category`：Minecraft 声音分类，默认 `record`。
+
+`normal` 每帧的 20 个分量不是全频段统一竞争，而是采用硬预算：
+
+| 频段 | 每帧最多保留 |
+| --- | ---: |
+| 60–500 Hz | 4 |
+| 500–2000 Hz | 6 |
+| 2000–8000 Hz | 7 |
+| 8000–12000 Hz | 3 |
+
+各频段只在自己的预算内选取峰值。空余名额不会跨频段转移，因此高频主要补充明亮度，不会抢走人声和旋律分量。`voice`、`high`、`experimental` 也使用按各自总预算扩展的固定分频限制；精确数值会写入 `*_analysis.json` 的 `quality_profile.band_budgets`。
 
 ### 频率与时间分辨率
 
@@ -167,14 +209,15 @@ wav2mc convert input.wav \
 - `--grain-ms`：颗粒/分析窗长，默认 100 ms。
 - `--hop-ms`：帧移，默认 50 ms。当前必须满足 `grain-ms = 2 * hop-ms`。
 - `--min-frequency` / `--max-frequency`：分析与资源包的频率范围。
-- `--frequency-step`：频点间距。更小会增加频率精度、资源包体积和生成时间。
+- `--frequency-grid adaptive|uniform`：默认 `adaptive`，按频段逐步增大间隔。
+- `--frequency-step`：均匀网格的频点间距。显式提供该参数会选择 `uniform`；更小会增加频率精度、资源包体积和生成时间。
 - `--phases`：离散相位数。更大会降低相位量化误差，但按比例扩大资源包。
 
 ### 心理声学掩蔽
 
 掩蔽默认开启。A-weighting 用于感知显著度排序，Bark 频带模型剔除强峰附近难以听见的弱峰。
 
-- `--masking-offset-db`：越高越保守，会保留更多峰值。`low/normal/high` 默认为 7/10/14 dB。
+- `--masking-offset-db`：越高越保守，会保留更多峰值。`voice/normal/high/experimental` 默认为 9/10/14/16 dB。
 - `--no-psychoacoustic-masking`：关闭 Bark 掩蔽，适合做 A/B 比较或诊断丢失的频率。
 
 ## Minecraft 响度校准
@@ -219,6 +262,8 @@ wav2mc convert input.wav \
 
 - `minecraft_version` 和 `data_pack.pack_format`：目标版本。
 - `required_resource_pack`：实际需要的 namespace、频率银行、相位数和颗粒音量。
+- `audio_config.frequency_grid`、`frequency_bands` 和 `frequency_count`：实际网格与资源数量。
+- `quality_profile.band_budgets`：每个频段的硬分量预算。
 - `preview_peak`：本地预览的峰值。
 - `average_components_per_frame` 和 `estimated_playsound_commands_per_second`：客户端负载指标。
 - `loudness_calibration.maximum_predicted_amplitude_error`：命令音量保留 6 位小数后的模型误差。
@@ -231,11 +276,17 @@ wav2mc convert input.wav \
 
 ### 进入游戏后完全无声
 
-确认资源包已启用，档位/namespace 与分析报告一致，执行过 `/reload` 和 `/function <name>:start`，且 `Records/Jukebox` 音量未静音。查看游戏日志中是否有缺失声音事件。
+先用与所装资源包对应的 namespace 直接测试一个声音事件。例如 `normal` 包应能播放：
+
+```mcfunction
+/playsound wav2mc_normal:grain.f0440.p00 record @s ~ ~ ~ 1 1
+```
+
+如果这条命令无声，检查资源包已启用、`Records/Jukebox` 音量未静音，并查看游戏日志中的资源加载或缺失声音错误。如果能听到测试音，则资源包正常；再执行 `/reload` 和 `/function <name>:start`，并确认 `<name>` 与数据包文件内的 namespace 一致。分析报告的 `required_resource_pack.namespace` 必须与 `/playsound` 前缀一致。
 
 ### 预览就有明显失真
 
-先尝试 `--quality high`、提高设备档位或频率上限。如某些弱频率被掩蔽，提高 `--masking-offset-db` 或临时关闭掩蔽做对照。对人声、鼓点和噪声，稀疏正弦重建仍会有明显声码器感。
+先尝试 `--mode high`，或在资源允许时使用 `--mode experimental`。如某些弱频率被掩蔽，提高 `--masking-offset-db` 或临时关闭掩蔽做对照。对人声、鼓点和噪声，稀疏正弦重建仍会有明显声码器感。
 
 ### 本地预览正常，游戏内音量不对
 
@@ -243,7 +294,7 @@ wav2mc convert input.wav \
 
 ### 客户端卡顿或声音断续
 
-改用 `normal` 或 `low` 设备档位，降低 `--quality`，缩小频率上限，或增大 `--frequency-step`。在分析报告中比较每帧分量和预计每秒命令数。
+改用 `normal` 或 `voice` 模式，或自建频率范围更窄、相位更少的资源包。在分析报告中比较每帧分量和预计每秒命令数。均匀网格用户也可以增大 `--frequency-step`。
 
 ## 完整示例
 
@@ -256,7 +307,7 @@ wav2mc bank-build-set \
 # 每首歌单独转换
 wav2mc convert music/example.flac \
   --name example_song \
-  --device-profile normal \
+  --mode normal \
   --gain 0.9 \
   --output-dir output
 ```

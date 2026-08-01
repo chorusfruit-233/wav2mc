@@ -17,6 +17,7 @@ def test_low_device_profile_reduces_bank_resolution() -> None:
     assert config.max_frequency == 2000
     assert config.frequency_step == 40
     assert config.phase_count == 8
+    assert config.frequency_grid == "uniform"
 
 
 def test_builds_device_tier_pack_set(tmp_path: Path) -> None:
@@ -34,14 +35,16 @@ def test_builds_device_tier_pack_set(tmp_path: Path) -> None:
     )
     manifest = json.loads(outputs["manifest"].read_text())
 
-    assert set(outputs) == {"low", "normal", "high", "manifest"}
+    expected_profiles = {"voice", "normal", "high", "experimental"}
+    assert set(outputs) == expected_profiles | {"manifest"}
     assert manifest["minecraft_version"] == "26.2"
     assert manifest["pack_format"] == 88.0
-    assert manifest["profiles"]["low"]["sound_count"] == 6
+    assert manifest["profiles"]["voice"]["sound_count"] == 10
     assert manifest["profiles"]["normal"]["sound_count"] == 10
     assert manifest["profiles"]["high"]["sound_count"] == 10
+    assert manifest["profiles"]["experimental"]["sound_count"] == 10
 
-    for profile_name in ("low", "normal", "high"):
+    for profile_name in expected_profiles:
         target = outputs[profile_name]
         assert target.is_file()
         with zipfile.ZipFile(target) as archive:
@@ -50,9 +53,10 @@ def test_builds_device_tier_pack_set(tmp_path: Path) -> None:
         assert metadata["device_profile"] == profile_name
         assert metadata["minecraft_version"] == "26.2"
         assert metadata["namespace"] == f"wav2mc_{profile_name}"
+        assert metadata["frequency_grid"] == "adaptive"
         assert pack_metadata["pack"]["pack_format"] == 88.0
         assert pack_metadata["pack"]["min_format"] == [88, 0]
         assert pack_metadata["pack"]["max_format"] == [88, 0]
 
-    assert manifest["profiles"]["low"]["audio_config"]["frequency_step"] == 40
-    assert manifest["profiles"]["high"]["audio_config"]["frequency_step"] == 20
+    assert manifest["profiles"]["voice"]["quality"] == "voice"
+    assert manifest["profiles"]["experimental"]["quality"] == "experimental"

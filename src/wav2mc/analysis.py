@@ -231,17 +231,6 @@ def analyse_audio(
             selected.extend(band[:count])
 
         selected = list(dict.fromkeys(selected))
-        if len(selected) < quality.max_components:
-            remaining = [
-                i
-                for i in range(frequencies.size)
-                if i not in selected
-                and amplitudes[i] >= floor
-                and i in local_peaks
-            ]
-            remaining.sort(key=score, reverse=True)
-            selected.extend(remaining[: quality.max_components - len(selected)])
-
         selected = selected[: quality.max_components]
         selected.sort(key=lambda i: int(frequencies[i]))
 

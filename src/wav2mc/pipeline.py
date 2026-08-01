@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from dataclasses import asdict
 from pathlib import Path
 
 import numpy as np
@@ -12,6 +11,7 @@ from .config import (
     AudioConfig,
     LoudnessCalibration,
     QualityProfile,
+    audio_config_metadata,
 )
 from .datapack import build_data_pack
 from .loudness import (
@@ -147,6 +147,17 @@ def convert_audio(
         "frame_count": len(frames),
         "tick_rate": 20,
         "quality": quality.name,
+        "quality_profile": {
+            "max_components": quality.max_components,
+            "band_budgets": [
+                {
+                    "min_frequency": low,
+                    "max_frequency": high,
+                    "max_components": count,
+                }
+                for low, high, count in quality.band_limits
+            ],
+        },
         "device_profile": device_profile,
         "psychoacoustic_masking": {
             "enabled": psychoacoustic_masking,
@@ -177,16 +188,10 @@ def convert_audio(
                 default=0.0,
             ),
         },
-        "audio_config": asdict(config),
+        "audio_config": audio_config_metadata(config),
         "required_resource_pack": {
             "namespace": bank_namespace,
-            "sample_rate": config.sample_rate,
-            "grain_ms": config.grain_ms,
-            "hop_ms": config.hop_ms,
-            "min_frequency": config.min_frequency,
-            "max_frequency": config.max_frequency,
-            "frequency_step": config.frequency_step,
-            "phase_count": config.phase_count,
+            **audio_config_metadata(config),
             "grain_level": bank_grain_level,
             "device_profile": device_profile,
         },

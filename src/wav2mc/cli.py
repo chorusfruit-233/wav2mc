@@ -8,6 +8,7 @@ from pathlib import Path
 from .bank import build_device_pack_set, build_resource_pack
 from .config import (
     DEVICE_PROFILES,
+    DEFAULT_DEVICE_PACK_PROFILES,
     DEFAULT_DATA_PACK_FORMAT,
     DEFAULT_LAYOUT,
     DEFAULT_RESOURCE_PACK_FORMAT,
@@ -23,21 +24,31 @@ def _add_audio_config(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--sample-rate", type=int, default=48_000)
     parser.add_argument("--grain-ms", type=float, default=100.0)
     parser.add_argument("--hop-ms", type=float, default=50.0)
-    parser.add_argument("--min-frequency", type=int, default=80)
-    parser.add_argument("--max-frequency", type=int, default=8000)
-    parser.add_argument("--frequency-step", type=int, default=20)
+    parser.add_argument("--min-frequency", type=int, default=20)
+    parser.add_argument("--max-frequency", type=int, default=20000)
+    parser.add_argument(
+        "--frequency-grid",
+        choices=("adaptive", "uniform"),
+        default=None,
+        help="Adaptive by default; explicit --frequency-step selects uniform",
+    )
+    parser.add_argument("--frequency-step", type=int, default=None)
     parser.add_argument("--phases", type=int, default=16)
 
 
 def _audio_config(args: argparse.Namespace) -> AudioConfig:
+    adaptive_frequency_grid = args.frequency_grid == "adaptive" or (
+        args.frequency_grid is None and args.frequency_step is None
+    )
     config = AudioConfig(
         sample_rate=args.sample_rate,
         grain_ms=args.grain_ms,
         hop_ms=args.hop_ms,
         min_frequency=args.min_frequency,
         max_frequency=args.max_frequency,
-        frequency_step=args.frequency_step,
+        frequency_step=args.frequency_step or 20,
         phase_count=args.phases,
+        adaptive_frequency_grid=adaptive_frequency_grid,
     )
     if config.hop_size * 2 != config.window_size:
         raise ValueError("The base implementation requires grain-ms = 2 * hop-ms")
@@ -85,6 +96,8 @@ def build_parser() -> argparse.ArgumentParser:
     bank_parser.add_argument("--grain-level", type=float, default=1.0)
     bank_parser.add_argument(
         "--device-profile",
+        "--mode",
+        dest="device_profile",
         choices=sorted(DEVICE_PROFILES),
         default=None,
     )
@@ -92,7 +105,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     set_parser = subparsers.add_parser(
         "bank-build-set",
-        help="Build low, normal, and high device-tier resource packs",
+        help="Build recommended adaptive-grid resource packs",
     )
     set_parser.add_argument(
         "--output-dir",
@@ -103,7 +116,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--profiles",
         nargs="+",
         choices=sorted(DEVICE_PROFILES),
-        default=list(DEVICE_PROFILES),
+        default=list(DEFAULT_DEVICE_PACK_PROFILES),
     )
     set_parser.add_argument(
         "--pack-format",
@@ -153,6 +166,8 @@ def build_parser() -> argparse.ArgumentParser:
     convert_parser.add_argument("--bank-grain-level", type=float, default=1.0)
     convert_parser.add_argument(
         "--device-profile",
+        "--mode",
+        dest="device_profile",
         choices=sorted(DEVICE_PROFILES),
         default=None,
     )

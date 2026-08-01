@@ -17,7 +17,7 @@
 - 本地 `preview.wav` 重建；
 - Minecraft 数据包 ZIP；
 - 通用正弦资源包 ZIP；
-- `low` / `normal` / `high` 三档设备资源包集；
+- 自适应频率网格和 `voice` / `normal` / `high` / `experimental` 四档资源包集；
 - scoreboard 播放器和分层帧分发，避免长 `schedule` 链。
 
 ## 默认目标
@@ -90,17 +90,22 @@ wav2mc bank-build \
 
 ## 2. 生成完整通用资源包
 
-资源包参数必须和后续转换命令保持一致：
+默认使用分段自适应频率网格，资源包参数必须和后续转换命令保持一致：
 
 ```bash
 wav2mc bank-build \
-  --output output/wav2mc_sine_bank.zip \
-  --min-frequency 80 \
-  --max-frequency 8000 \
-  --frequency-step 20 \
-  --phases 16 \
-  --grain-level 1.0
+  --output output/wav2mc_sine_bank.zip
 ```
+
+| 频率范围 | 间隔 |
+| --- | ---: |
+| 20–1000 Hz | 20 Hz |
+| 1000–4000 Hz | 40 Hz |
+| 4000–8000 Hz | 80 Hz |
+| 8000–12000 Hz | 160 Hz |
+| 12000–20000 Hz | 320 Hz |
+
+完整网格只有 225 个频点。边界频点只生成一次；档位截止频率不落在网格上时，以截止频率以下最后一个频点为准。
 
 输出资源包中包含：
 
@@ -119,19 +124,20 @@ assets/wav2mc/sounds.json
 wav2mc bank-build-set --output-dir output/device_banks
 ```
 
-| 档位 | 频率上限 | 频率步长 | 相位数 | 默认质量 |
-| --- | ---: | ---: | ---: | --- |
-| `low` | 2000 Hz | 40 Hz | 8 | `low` |
-| `normal` | 4000 Hz | 20 Hz | 8 | `normal` |
-| `high` | 8000 Hz | 20 Hz | 16 | `high` |
+| 模式 | 频率范围 | 相位数 | 每帧最多分量 | 用途 |
+| --- | --- | ---: | ---: | --- |
+| `voice` | 80–8000 Hz | 8 | 12 | 语音和低负载播放 |
+| `normal` | 60–12000 Hz | 12 | 20 | 普通音乐，推荐默认选择 |
+| `high` | 40–16000 Hz | 16 | 24 | 更完整的音乐细节 |
+| `experimental` | 20–20000 Hz | 16 | 32 | 最大频宽和命令负载 |
 
-命令会生成三个独立 ZIP 和 `wav2mc-device-packs.json` 清单。转换时使用同一档位，会自动匹配频率、相位、质量和 namespace：
+命令会生成四个独立 ZIP 和 `wav2mc-device-packs.json` 清单。转换时使用同一模式，会自动匹配频率、相位、质量和 namespace。`--mode` 是 `--device-profile` 的简写：
 
 ```bash
-wav2mc convert input.wav --device-profile normal
+wav2mc convert input.wav --mode normal
 ```
 
-对应资源包 namespace 为 `wav2mc_normal`。可用 `--profiles low normal` 只生成部分档位。
+对应资源包 namespace 为 `wav2mc_normal`。可用 `--profiles voice normal` 只生成部分模式。旧 `low` 模式仍可显式选择，但不在默认生成集合中。
 
 ## 3. 转换音频
 
@@ -191,17 +197,33 @@ wav2mc convert input.wav \
 
 ## 质量档位
 
-```text
-low     每帧最多 8 个分量
-normal  每帧最多 12 个分量
-high    每帧最多 20 个分量
-```
+| 质量 | 频率范围 | 每帧最多分量 |
+| --- | --- | ---: |
+| `voice` | 80–8000 Hz | 12 |
+| `normal` | 60–12000 Hz | 20 |
+| `high` | 40–16000 Hz | 24 |
+| `experimental` | 20–20000 Hz | 32 |
+
+`normal` 的 20 个名额按频段硬限制为 4 / 6 / 7 / 3，分别对应 60–500、500–2000、2000–8000、8000–12000 Hz。某个频段没有足够候选峰时，其空余名额不会转给其他频段，因此高频不会挤占人声和旋律的主要分量。其他质量档也采用同样的固定分频预算策略。
 
 示例：
 
 ```bash
 wav2mc convert input.wav --quality high --gain 0.8
 ```
+
+单独指定 `--quality` 只改变每帧选峰预算，不会自动切换资源包频率和 namespace。日常使用优先选择 `--mode high`，确保资源包与数据包完全匹配。
+
+## 频率网格兼容
+
+默认 `--frequency-grid adaptive` 使用上面的分段网格。只要显式提供 `--frequency-step`，就会切换到旧版均匀网格；也可以完整写明：
+
+```bash
+wav2mc bank-build --frequency-grid uniform --frequency-step 20
+wav2mc convert input.wav --frequency-grid uniform --frequency-step 20
+```
+
+同一组自定义资源包和转换命令必须选择相同网格。设备模式固定使用其预设网格，不应再覆盖频率参数。
 
 ## 参数匹配
 
@@ -212,11 +234,12 @@ wav2mc convert input.wav --quality high --gain 0.8
 - `--hop-ms`
 - `--min-frequency`
 - `--max-frequency`
+- `--frequency-grid`
 - `--frequency-step`
 - `--phases`
 - `bank-build --grain-level` 与 `convert --bank-grain-level`
 - 资源包 namespace 与转换时的 `--bank-namespace`
-- 使用设备档位时，`bank-build-set` 与 `convert --device-profile` 的档位相同
+- 使用设备模式时，`bank-build-set` 与 `convert --mode` 的模式相同
 
 转换报告 `*_analysis.json` 会记录所需资源包参数。
 

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from dataclasses import asdict
 from pathlib import Path
 
 import numpy as np
@@ -9,8 +8,10 @@ import soundfile as sf
 from .audio import sqrt_hann
 from .config import (
     DEVICE_PROFILES,
+    DEFAULT_DEVICE_PACK_PROFILES,
     DEFAULT_MINECRAFT_VERSION,
     AudioConfig,
+    audio_config_metadata,
     device_audio_config,
 )
 from .utils import (
@@ -57,13 +58,7 @@ def build_resource_pack(
             {
                 "minecraft_version": DEFAULT_MINECRAFT_VERSION,
                 "namespace": namespace,
-                "sample_rate": config.sample_rate,
-                "grain_ms": config.grain_ms,
-                "hop_ms": config.hop_ms,
-                "min_frequency": config.min_frequency,
-                "max_frequency": config.max_frequency,
-                "frequency_step": config.frequency_step,
-                "phase_count": config.phase_count,
+                **audio_config_metadata(config),
                 "grain_level": grain_level,
                 "device_profile": device_profile,
             },
@@ -111,7 +106,7 @@ def build_device_pack_set(
     pack_format: float,
     namespace_prefix: str = "wav2mc",
     grain_level: float = 1.0,
-    profile_names: tuple[str, ...] = tuple(DEVICE_PROFILES),
+    profile_names: tuple[str, ...] = DEFAULT_DEVICE_PACK_PROFILES,
 ) -> dict[str, Path]:
     if not profile_names:
         raise ValueError("At least one device profile is required")
@@ -141,7 +136,7 @@ def build_device_pack_set(
             "file": target.name,
             "namespace": namespace,
             "quality": profile.quality_name,
-            "audio_config": asdict(config),
+            "audio_config": audio_config_metadata(config),
             "sound_count": len(config.frequencies) * config.phase_count,
         }
 
