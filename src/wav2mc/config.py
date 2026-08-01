@@ -134,6 +134,7 @@ def device_audio_config(config: AudioConfig, profile: DeviceProfile) -> AudioCon
     )
 
 
-DEFAULT_RESOURCE_PACK_FORMAT = 64
-DEFAULT_DATA_PACK_FORMAT = 81
+DEFAULT_MINECRAFT_VERSION = "26.2"
+DEFAULT_RESOURCE_PACK_FORMAT = 88.0
+DEFAULT_DATA_PACK_FORMAT = 107.1
 DEFAULT_LAYOUT = "modern"

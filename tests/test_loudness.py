@@ -5,7 +5,7 @@ from pathlib import Path
 import numpy as np
 
 from wav2mc.analysis import AudioFrame, Component
-from wav2mc.config import LoudnessCalibration
+from wav2mc.config import DEFAULT_DATA_PACK_FORMAT, LoudnessCalibration
 from wav2mc.datapack import build_data_pack
 from wav2mc.loudness import (
     maximum_reproducible_amplitude,
@@ -54,7 +54,7 @@ def test_data_pack_writes_calibrated_command_volume(tmp_path: Path) -> None:
         frames,
         namespace="calibrated",
         bank_namespace="wav2mc",
-        pack_format=81,
+        pack_format=DEFAULT_DATA_PACK_FORMAT,
         layout="modern",
         bank_grain_level=0.5,
         loudness_calibration=calibration,
@@ -68,4 +68,5 @@ def test_data_pack_writes_calibrated_command_volume(tmp_path: Path) -> None:
 
     assert "0.707107 1.0 0.0" in command
     assert metadata["bank_grain_level"] == 0.5
+    assert metadata["minecraft_version"] == "26.2"
     assert metadata["loudness_calibration"]["volume_exponent"] == 2.0

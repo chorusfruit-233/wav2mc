@@ -7,7 +7,12 @@ import numpy as np
 
 from .analysis import analyse_audio, scale_frames
 from .audio import load_mono, peak_normalize, preprocess_audio, write_wav
-from .config import AudioConfig, LoudnessCalibration, QualityProfile
+from .config import (
+    DEFAULT_MINECRAFT_VERSION,
+    AudioConfig,
+    LoudnessCalibration,
+    QualityProfile,
+)
 from .datapack import build_data_pack
 from .loudness import (
     maximum_reproducible_amplitude,
@@ -24,7 +29,7 @@ def convert_audio(
     song_name: str,
     config: AudioConfig,
     quality: QualityProfile,
-    data_pack_format: int,
+    data_pack_format: float,
     layout: str,
     bank_namespace: str,
     category: str,
@@ -45,6 +50,11 @@ def convert_audio(
 
     output_dir.mkdir(parents=True, exist_ok=True)
     namespace = safe_namespace(song_name)
+    resolved_source = source.resolve()
+    try:
+        report_source = str(resolved_source.relative_to(Path.cwd().resolve()))
+    except ValueError:
+        report_source = str(resolved_source)
     data_pack_path = output_dir / f"{namespace}_datapack.zip"
     preview_path = output_dir / f"{namespace}_preview.wav"
     report_path = output_dir / f"{namespace}_analysis.json"
@@ -126,7 +136,8 @@ def convert_audio(
                 )
             )
     report = {
-        "source": str(source.resolve()),
+        "minecraft_version": DEFAULT_MINECRAFT_VERSION,
+        "source": report_source,
         "song_namespace": namespace,
         "input_duration_seconds": round(audio.size / config.sample_rate, 6),
         "output_duration_seconds": round(preview.size / config.sample_rate, 6),

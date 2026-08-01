@@ -76,7 +76,11 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         default=Path("output/wav2mc_sine_bank.zip"),
     )
-    bank_parser.add_argument("--pack-format", type=int, default=DEFAULT_RESOURCE_PACK_FORMAT)
+    bank_parser.add_argument(
+        "--pack-format",
+        type=float,
+        default=DEFAULT_RESOURCE_PACK_FORMAT,
+    )
     bank_parser.add_argument("--namespace", default=None)
     bank_parser.add_argument("--grain-level", type=float, default=1.0)
     bank_parser.add_argument(
@@ -103,7 +107,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     set_parser.add_argument(
         "--pack-format",
-        type=int,
+        type=float,
         default=DEFAULT_RESOURCE_PACK_FORMAT,
     )
     set_parser.add_argument("--namespace-prefix", default="wav2mc")
@@ -124,7 +128,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     convert_parser.add_argument(
         "--data-pack-format",
-        type=int,
+        type=float,
         default=DEFAULT_DATA_PACK_FORMAT,
     )
     convert_parser.add_argument(

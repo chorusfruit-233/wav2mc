@@ -20,12 +20,14 @@
 
 ## 默认目标
 
-默认参数按 Minecraft Java 1.21.7 设置：
+默认参数按 Minecraft Java 26.2 设置：
 
-- 资源包格式：64
-- 数据包格式：81
+- 资源包格式：88.0
+- 数据包格式：107.1
 - 现代目录：`data/<namespace>/function`
 - 20 tick/s
+
+格式号依据 [Minecraft Java Edition 26.2 官方发布说明](https://www.minecraft.net/en-us/article/minecraft-java-edition-26-2)。
 
 其他版本请通过命令行覆盖 `--pack-format`、`--data-pack-format` 和 `--layout`。
 

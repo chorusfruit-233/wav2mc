@@ -3,7 +3,7 @@ Demo parameters:
 - frequency step: 20 Hz
 - phases: 4
 - quality: low
-- Minecraft Java 1.21.7 defaults
+- Minecraft Java 26.2 defaults
 
 Files:
 - wav2mc_test_bank_400_900hz_4phase.zip: small reusable resource pack

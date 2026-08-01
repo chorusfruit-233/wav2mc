@@ -3,7 +3,12 @@ import zipfile
 from pathlib import Path
 
 from wav2mc.bank import build_device_pack_set
-from wav2mc.config import DEVICE_PROFILES, AudioConfig, device_audio_config
+from wav2mc.config import (
+    DEVICE_PROFILES,
+    DEFAULT_RESOURCE_PACK_FORMAT,
+    AudioConfig,
+    device_audio_config,
+)
 
 
 def test_low_device_profile_reduces_bank_resolution() -> None:
@@ -25,11 +30,13 @@ def test_builds_device_tier_pack_set(tmp_path: Path) -> None:
     outputs = build_device_pack_set(
         output_dir=tmp_path,
         base_config=base_config,
-        pack_format=64,
+        pack_format=DEFAULT_RESOURCE_PACK_FORMAT,
     )
     manifest = json.loads(outputs["manifest"].read_text())
 
     assert set(outputs) == {"low", "normal", "high", "manifest"}
+    assert manifest["minecraft_version"] == "26.2"
+    assert manifest["pack_format"] == 88.0
     assert manifest["profiles"]["low"]["sound_count"] == 6
     assert manifest["profiles"]["normal"]["sound_count"] == 10
     assert manifest["profiles"]["high"]["sound_count"] == 10
@@ -39,8 +46,11 @@ def test_builds_device_tier_pack_set(tmp_path: Path) -> None:
         assert target.is_file()
         with zipfile.ZipFile(target) as archive:
             metadata = json.loads(archive.read("wav2mc-bank.json"))
+            pack_metadata = json.loads(archive.read("pack.mcmeta"))
         assert metadata["device_profile"] == profile_name
+        assert metadata["minecraft_version"] == "26.2"
         assert metadata["namespace"] == f"wav2mc_{profile_name}"
+        assert pack_metadata["pack"]["pack_format"] == 88.0
 
     assert manifest["profiles"]["low"]["audio_config"]["frequency_step"] == 40
     assert manifest["profiles"]["high"]["audio_config"]["frequency_step"] == 20

@@ -1,16 +1,31 @@
 {
-  "source": "/mnt/data/wav2mc-basic/test_tone.wav",
+  "minecraft_version": "26.2",
+  "source": "demo/test_tone.wav",
   "song_namespace": "test_song",
   "input_duration_seconds": 4.0,
   "output_duration_seconds": 4.0,
   "frame_count": 79,
   "tick_rate": 20,
   "quality": "low",
+  "device_profile": null,
+  "psychoacoustic_masking": {
+    "enabled": true,
+    "model": "A-weighted asymmetric Bark spreading",
+    "masking_offset_db": 7.0
+  },
   "safe_scale": 1.0,
   "preview_peak": 0.8116545081138611,
   "average_components_per_frame": 3.0,
   "maximum_components_per_frame": 3,
   "estimated_playsound_commands_per_second": 60.0,
+  "loudness_calibration": {
+    "minecraft_gain": 1.0,
+    "volume_exponent": 1.0,
+    "max_command_volume": 1.0,
+    "maximum_reproducible_component_amplitude": 1.0,
+    "maximum_command_volume_used": 0.376407,
+    "maximum_predicted_amplitude_error": 4.895739555421663e-07
+  },
   "audio_config": {
     "sample_rate": 48000,
     "grain_ms": 100.0,
@@ -29,10 +44,11 @@
     "max_frequency": 900,
     "frequency_step": 20,
     "phase_count": 4,
-    "grain_level": 1.0
+    "grain_level": 1.0,
+    "device_profile": null
   },
   "data_pack": {
-    "pack_format": 81,
+    "pack_format": 107.1,
     "layout": "modern",
     "category": "record"
   },

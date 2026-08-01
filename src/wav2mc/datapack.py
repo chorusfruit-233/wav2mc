@@ -4,7 +4,7 @@ from pathlib import Path
 
 from .analysis import AudioFrame
 from .bank import sound_event_name
-from .config import LoudnessCalibration
+from .config import DEFAULT_MINECRAFT_VERSION, LoudnessCalibration
 from .loudness import minecraft_command_volume
 from .utils import temporary_directory, write_json, zip_directory
 
@@ -75,7 +75,7 @@ def build_data_pack(
     frames: list[AudioFrame],
     namespace: str,
     bank_namespace: str,
-    pack_format: int,
+    pack_format: float,
     layout: str,
     category: str = "record",
     bank_grain_level: float = 1.0,
@@ -99,6 +99,7 @@ def build_data_pack(
         write_json(
             root / "wav2mc-song.json",
             {
+                "minecraft_version": DEFAULT_MINECRAFT_VERSION,
                 "namespace": namespace,
                 "bank_namespace": bank_namespace,
                 "frames": frame_count,

@@ -9,6 +9,7 @@ import soundfile as sf
 from .audio import sqrt_hann
 from .config import (
     DEVICE_PROFILES,
+    DEFAULT_MINECRAFT_VERSION,
     AudioConfig,
     device_audio_config,
 )
@@ -22,7 +23,7 @@ def sound_event_name(frequency: int, phase_index: int) -> str:
 def build_resource_pack(
     output: Path,
     config: AudioConfig,
-    pack_format: int,
+    pack_format: float,
     namespace: str = "wav2mc",
     grain_level: float = 1.0,
     device_profile: str | None = None,
@@ -50,6 +51,7 @@ def build_resource_pack(
         write_json(
             root / "wav2mc-bank.json",
             {
+                "minecraft_version": DEFAULT_MINECRAFT_VERSION,
                 "namespace": namespace,
                 "sample_rate": config.sample_rate,
                 "grain_ms": config.grain_ms,
@@ -102,7 +104,7 @@ def build_resource_pack(
 def build_device_pack_set(
     output_dir: Path,
     base_config: AudioConfig,
-    pack_format: int,
+    pack_format: float,
     namespace_prefix: str = "wav2mc",
     grain_level: float = 1.0,
     profile_names: tuple[str, ...] = tuple(DEVICE_PROFILES),
@@ -143,6 +145,7 @@ def build_device_pack_set(
     write_json(
         manifest,
         {
+            "minecraft_version": DEFAULT_MINECRAFT_VERSION,
             "pack_format": pack_format,
             "grain_level": grain_level,
             "profiles": manifest_profiles,

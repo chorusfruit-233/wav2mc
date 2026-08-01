@@ -4,7 +4,12 @@ import numpy as np
 
 from wav2mc.analysis import analyse_audio
 from wav2mc.audio import sqrt_hann
-from wav2mc.config import AudioConfig, QUALITY_PROFILES, QualityProfile
+from wav2mc.config import (
+    DEFAULT_DATA_PACK_FORMAT,
+    AudioConfig,
+    QUALITY_PROFILES,
+    QualityProfile,
+)
 from wav2mc.datapack import build_data_pack
 
 
@@ -129,7 +134,7 @@ def test_builds_data_pack(tmp_path: Path) -> None:
         frames,
         namespace="test_song",
         bank_namespace="wav2mc",
-        pack_format=81,
+        pack_format=DEFAULT_DATA_PACK_FORMAT,
         layout="modern",
     )
     assert target.is_file()
