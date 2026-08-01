@@ -13,7 +13,13 @@ from .config import (
     AudioConfig,
     device_audio_config,
 )
-from .utils import safe_namespace, temporary_directory, write_json, zip_directory
+from .utils import (
+    pack_metadata,
+    safe_namespace,
+    temporary_directory,
+    write_json,
+    zip_directory,
+)
 
 
 def sound_event_name(frequency: int, phase_index: int) -> str:
@@ -39,13 +45,11 @@ def build_resource_pack(
         write_json(
             root / "pack.mcmeta",
             {
-                "pack": {
-                    "pack_format": pack_format,
-                    "description": (
-                        "wav2mc reusable sine-grain bank"
-                        + (f" ({device_profile})" if device_profile else "")
-                    ),
-                }
+                "pack": pack_metadata(
+                    pack_format,
+                    "wav2mc reusable sine-grain bank"
+                    + (f" ({device_profile})" if device_profile else ""),
+                )
             },
         )
         write_json(

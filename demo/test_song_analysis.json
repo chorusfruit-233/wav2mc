@@ -1,6 +1,7 @@
 {
   "minecraft_version": "26.2",
   "source": "demo/test_tone.wav",
+  "input_audio_stream": 0,
   "song_namespace": "test_song",
   "input_duration_seconds": 4.0,
   "output_duration_seconds": 4.0,

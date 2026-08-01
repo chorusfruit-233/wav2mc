@@ -6,7 +6,7 @@ from .analysis import AudioFrame
 from .bank import sound_event_name
 from .config import DEFAULT_MINECRAFT_VERSION, LoudnessCalibration
 from .loudness import minecraft_command_volume
-from .utils import temporary_directory, write_json, zip_directory
+from .utils import pack_metadata, temporary_directory, write_json, zip_directory
 
 
 def _layout_directories(layout: str) -> tuple[str, str]:
@@ -90,10 +90,10 @@ def build_data_pack(
         write_json(
             root / "pack.mcmeta",
             {
-                "pack": {
-                    "pack_format": pack_format,
-                    "description": f"wav2mc song: {namespace}",
-                }
+                "pack": pack_metadata(
+                    pack_format,
+                    f"wav2mc song: {namespace}",
+                )
             },
         )
         write_json(

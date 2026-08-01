@@ -51,6 +51,8 @@ def test_builds_device_tier_pack_set(tmp_path: Path) -> None:
         assert metadata["minecraft_version"] == "26.2"
         assert metadata["namespace"] == f"wav2mc_{profile_name}"
         assert pack_metadata["pack"]["pack_format"] == 88.0
+        assert pack_metadata["pack"]["min_format"] == [88, 0]
+        assert pack_metadata["pack"]["max_format"] == [88, 0]
 
     assert manifest["profiles"]["low"]["audio_config"]["frequency_step"] == 40
     assert manifest["profiles"]["high"]["audio_config"]["frequency_step"] == 20

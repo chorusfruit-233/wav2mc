@@ -37,6 +37,22 @@ def write_json(path: Path, payload: object) -> None:
     )
 
 
+def pack_metadata(pack_format: float, description: str) -> dict[str, object]:
+    metadata: dict[str, object] = {
+        "pack_format": pack_format,
+        "description": description,
+    }
+    if pack_format > 64:
+        major_text, separator, minor_text = str(pack_format).partition(".")
+        version = [
+            int(major_text),
+            int(minor_text.rstrip("0") or "0") if separator else 0,
+        ]
+        metadata["min_format"] = version
+        metadata["max_format"] = version
+    return metadata
+
+
 def zip_directory(source: Path, target: Path) -> None:
     target.parent.mkdir(parents=True, exist_ok=True)
     with zipfile.ZipFile(target, "w", compression=zipfile.ZIP_DEFLATED) as archive:
