@@ -1,13 +1,18 @@
 from __future__ import annotations
 
+from dataclasses import asdict
 from pathlib import Path
 
 import numpy as np
 import soundfile as sf
 
 from .audio import sqrt_hann
-from .config import AudioConfig
-from .utils import temporary_directory, write_json, zip_directory
+from .config import (
+    DEVICE_PROFILES,
+    AudioConfig,
+    device_audio_config,
+)
+from .utils import safe_namespace, temporary_directory, write_json, zip_directory
 
 
 def sound_event_name(frequency: int, phase_index: int) -> str:
@@ -20,6 +25,7 @@ def build_resource_pack(
     pack_format: int,
     namespace: str = "wav2mc",
     grain_level: float = 1.0,
+    device_profile: str | None = None,
 ) -> None:
     if not 0.0 < grain_level <= 1.0:
         raise ValueError("grain_level must be in (0, 1]")
@@ -34,7 +40,10 @@ def build_resource_pack(
             {
                 "pack": {
                     "pack_format": pack_format,
-                    "description": "wav2mc reusable sine-grain bank",
+                    "description": (
+                        "wav2mc reusable sine-grain bank"
+                        + (f" ({device_profile})" if device_profile else "")
+                    ),
                 }
             },
         )
@@ -50,6 +59,7 @@ def build_resource_pack(
                 "frequency_step": config.frequency_step,
                 "phase_count": config.phase_count,
                 "grain_level": grain_level,
+                "device_profile": device_profile,
             },
         )
 
@@ -87,3 +97,56 @@ def build_resource_pack(
 
         write_json(root / "assets" / namespace / "sounds.json", sounds)
         zip_directory(root, output)
+
+
+def build_device_pack_set(
+    output_dir: Path,
+    base_config: AudioConfig,
+    pack_format: int,
+    namespace_prefix: str = "wav2mc",
+    grain_level: float = 1.0,
+    profile_names: tuple[str, ...] = tuple(DEVICE_PROFILES),
+) -> dict[str, Path]:
+    if not profile_names:
+        raise ValueError("At least one device profile is required")
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    outputs: dict[str, Path] = {}
+    manifest_profiles: dict[str, object] = {}
+    for profile_name in profile_names:
+        try:
+            profile = DEVICE_PROFILES[profile_name]
+        except KeyError as exc:
+            raise ValueError(f"Unknown device profile: {profile_name}") from exc
+
+        config = device_audio_config(base_config, profile)
+        namespace = safe_namespace(f"{namespace_prefix}_{profile.name}")
+        target = output_dir / f"{namespace}_sine_bank.zip"
+        build_resource_pack(
+            output=target,
+            config=config,
+            pack_format=pack_format,
+            namespace=namespace,
+            grain_level=grain_level,
+            device_profile=profile.name,
+        )
+        outputs[profile.name] = target
+        manifest_profiles[profile.name] = {
+            "file": target.name,
+            "namespace": namespace,
+            "quality": profile.quality_name,
+            "audio_config": asdict(config),
+            "sound_count": len(config.frequencies) * config.phase_count,
+        }
+
+    manifest = output_dir / "wav2mc-device-packs.json"
+    write_json(
+        manifest,
+        {
+            "pack_format": pack_format,
+            "grain_level": grain_level,
+            "profiles": manifest_profiles,
+        },
+    )
+    outputs["manifest"] = manifest
+    return outputs

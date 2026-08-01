@@ -2,7 +2,7 @@
 
 ## Project Structure & Module Organization
 
-The installable package uses a `src` layout. Production code lives in `src/wav2mc/`: `audio.py` handles decoding and WAV I/O, `analysis.py` extracts spectral components, `preview.py` reconstructs audio, and `bank.py`/`datapack.py` generate Minecraft packs. `pipeline.py` coordinates conversion, while `cli.py` defines the `wav2mc` command. Keep shared defaults and data classes in `config.py`.
+The installable package uses a `src` layout. Production code lives in `src/wav2mc/`: `audio.py` handles decoding, `analysis.py` extracts components, `preview.py` reconstructs audio, and `loudness.py` calibrates Minecraft volume. `bank.py`/`datapack.py` generate packs, `pipeline.py` coordinates conversion, and `cli.py` defines the command. Keep shared defaults and data classes in `config.py`.
 
 Tests belong in `tests/`; reusable examples belong in `examples/`. `demo/` contains small reference inputs and generated artifacts. Do not commit routine build output from `output/`, virtual environments, caches, or generated `*.wav`, `*.ogg`, and `*.zip` files unless they are intentional demo fixtures.
 

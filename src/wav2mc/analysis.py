@@ -34,6 +34,66 @@ def _candidate_indices(amplitudes: np.ndarray) -> np.ndarray:
     return np.flatnonzero(mask)
 
 
+def _a_weighting_db(frequencies: np.ndarray) -> np.ndarray:
+    values = np.asarray(frequencies, dtype=np.float64)
+    squared = values**2
+    numerator = 12194.0**2 * squared**2
+    denominator = (
+        (squared + 20.6**2)
+        * np.sqrt((squared + 107.7**2) * (squared + 737.9**2))
+        * (squared + 12194.0**2)
+    )
+    return 20.0 * np.log10(numerator / denominator) + 2.0
+
+
+def _bark_scale(frequencies: np.ndarray) -> np.ndarray:
+    values = np.asarray(frequencies, dtype=np.float64)
+    return 13.0 * np.arctan(0.00076 * values) + 3.5 * np.arctan(
+        (values / 7500.0) ** 2
+    )
+
+
+def _perceptual_levels_db(
+    amplitudes: np.ndarray,
+    frequencies: np.ndarray,
+) -> np.ndarray:
+    amplitude_db = 20.0 * np.log10(np.maximum(amplitudes, 1e-12))
+    return amplitude_db + _a_weighting_db(frequencies)
+
+
+def _audible_peak_indices(
+    perceptual_levels_db: np.ndarray,
+    frequencies: np.ndarray,
+    peak_indices: set[int],
+    masking_offset_db: float,
+) -> set[int]:
+    """Apply an asymmetric Bark-domain spreading model to tonal peaks."""
+    bark_positions = _bark_scale(frequencies)
+    audible: list[int] = []
+    ordered = sorted(
+        peak_indices,
+        key=lambda index: float(perceptual_levels_db[index]),
+        reverse=True,
+    )
+    for index in ordered:
+        level = float(perceptual_levels_db[index])
+        masked = False
+        for masker in audible:
+            bark_delta = float(bark_positions[index] - bark_positions[masker])
+            slope = 12.0 if bark_delta > 0.0 else 27.0
+            masking_threshold = (
+                float(perceptual_levels_db[masker])
+                - masking_offset_db
+                - slope * abs(bark_delta)
+            )
+            if level <= masking_threshold:
+                masked = True
+                break
+        if not masked:
+            audible.append(index)
+    return set(audible)
+
+
 def _track_peak_indices(
     amplitudes: np.ndarray,
     peak_indices: np.ndarray,
@@ -87,6 +147,7 @@ def analyse_audio(
     continuity_bonus: float = 0.12,
     tracking_radius_steps: int = 1,
     tracking_hysteresis: float = 0.10,
+    psychoacoustic_masking: bool = True,
 ) -> list[AudioFrame]:
     if continuity_bonus < 0.0:
         raise ValueError("continuity_bonus must not be negative")
@@ -94,6 +155,8 @@ def analyse_audio(
         raise ValueError("tracking_radius_steps must not be negative")
     if tracking_hysteresis < 0.0:
         raise ValueError("tracking_hysteresis must not be negative")
+    if quality.masking_offset_db < 0.0:
+        raise ValueError("masking_offset_db must not be negative")
 
     n = config.window_size
     hop = config.hop_size
@@ -135,17 +198,25 @@ def analyse_audio(
             tracking_radius_steps,
             tracking_hysteresis,
         )
+        perceptual_levels = _perceptual_levels_db(amplitudes, frequencies)
+        if psychoacoustic_masking:
+            local_peaks = _audible_peak_indices(
+                perceptual_levels,
+                frequencies,
+                local_peaks,
+                quality.masking_offset_db,
+            )
         selected: list[int] = []
 
         def score(index: int) -> float:
-            base = float(amplitudes[index])
+            base = float(perceptual_levels[index])
             nearest_track = min(
                 (abs(index - previous) for previous in previous_indices),
                 default=tracking_radius_steps + 1,
             )
             if nearest_track <= tracking_radius_steps:
                 proximity = 1.0 - nearest_track / (tracking_radius_steps + 1)
-                base *= 1.0 + continuity_bonus * proximity
+                base += 20.0 * np.log10(1.0 + continuity_bonus * proximity)
             return base
 
         for low, high, count in quality.band_limits:

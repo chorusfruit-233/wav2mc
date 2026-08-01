@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "wav2mc"
-version = "0.1.0"
+version = "0.2.0"
 description = "Convert WAV/audio files into a Minecraft Java data pack that plays through a reusable sine-grain resource pack."
 readme = "README.md"
 requires-python = ">=3.10"

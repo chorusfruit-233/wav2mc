@@ -7,8 +7,13 @@ import numpy as np
 
 from .analysis import analyse_audio, scale_frames
 from .audio import load_mono, peak_normalize, preprocess_audio, write_wav
-from .config import AudioConfig, QualityProfile
+from .config import AudioConfig, LoudnessCalibration, QualityProfile
 from .datapack import build_data_pack
+from .loudness import (
+    maximum_reproducible_amplitude,
+    minecraft_command_volume,
+    predicted_minecraft_amplitude,
+)
 from .preview import calculate_safe_scale, synthesize_preview
 from .utils import safe_namespace, temporary_directory, write_json
 
@@ -25,7 +30,12 @@ def convert_audio(
     category: str,
     requested_gain: float,
     bank_grain_level: float,
+    loudness_calibration: LoudnessCalibration | None = None,
+    psychoacoustic_masking: bool = True,
+    device_profile: str | None = None,
 ) -> dict[str, Path]:
+    calibration = loudness_calibration or LoudnessCalibration()
+    calibration.validate()
     if not source.is_file():
         raise FileNotFoundError(source)
     if requested_gain <= 0:
@@ -51,7 +61,12 @@ def convert_audio(
         audio = load_mono(decoded, config.sample_rate)
         audio = peak_normalize(audio, target_peak=0.92)
 
-    frames = analyse_audio(audio, config, quality)
+    frames = analyse_audio(
+        audio,
+        config,
+        quality,
+        psychoacoustic_masking=psychoacoustic_masking,
+    )
     rough_preview = synthesize_preview(frames, config)
     safe_scale = calculate_safe_scale(
         rough_preview,
@@ -63,24 +78,53 @@ def convert_audio(
         default=0.0,
     )
     if maximum_component > 0.0:
-        safe_scale = min(safe_scale, bank_grain_level / maximum_component)
+        maximum_supported = maximum_reproducible_amplitude(
+            bank_grain_level,
+            calibration,
+        )
+        safe_scale = min(safe_scale, maximum_supported / maximum_component)
 
     target_frames = scale_frames(frames, safe_scale)
     preview = synthesize_preview(target_frames, config)
     write_wav(preview_path, preview, config.sample_rate)
 
-    command_frames = scale_frames(target_frames, 1.0 / bank_grain_level)
     build_data_pack(
         data_pack_path,
-        frames=command_frames,
+        frames=target_frames,
         namespace=namespace,
         bank_namespace=bank_namespace,
         pack_format=data_pack_format,
         layout=layout,
         category=category,
+        bank_grain_level=bank_grain_level,
+        loudness_calibration=calibration,
     )
 
-    component_counts = np.asarray([len(frame.components) for frame in command_frames], dtype=int)
+    component_counts = np.asarray(
+        [len(frame.components) for frame in target_frames],
+        dtype=int,
+    )
+    amplitude_predictions = []
+    command_volumes = []
+    for frame in target_frames:
+        for component in frame.components:
+            command_volume = minecraft_command_volume(
+                component.amplitude,
+                bank_grain_level,
+                calibration,
+            )
+            rounded_volume = round(command_volume, 6)
+            command_volumes.append(rounded_volume)
+            amplitude_predictions.append(
+                abs(
+                    predicted_minecraft_amplitude(
+                        rounded_volume,
+                        bank_grain_level,
+                        calibration,
+                    )
+                    - component.amplitude
+                )
+            )
     report = {
         "source": str(source.resolve()),
         "song_namespace": namespace,
@@ -89,6 +133,12 @@ def convert_audio(
         "frame_count": len(frames),
         "tick_rate": 20,
         "quality": quality.name,
+        "device_profile": device_profile,
+        "psychoacoustic_masking": {
+            "enabled": psychoacoustic_masking,
+            "model": "A-weighted asymmetric Bark spreading",
+            "masking_offset_db": quality.masking_offset_db,
+        },
         "safe_scale": safe_scale,
         "preview_peak": float(np.max(np.abs(preview))) if preview.size else 0.0,
         "average_components_per_frame": (
@@ -100,6 +150,19 @@ def convert_audio(
         "estimated_playsound_commands_per_second": (
             float(component_counts.mean() * 20) if component_counts.size else 0.0
         ),
+        "loudness_calibration": {
+            "minecraft_gain": calibration.minecraft_gain,
+            "volume_exponent": calibration.volume_exponent,
+            "max_command_volume": calibration.max_command_volume,
+            "maximum_reproducible_component_amplitude": (
+                maximum_reproducible_amplitude(bank_grain_level, calibration)
+            ),
+            "maximum_command_volume_used": max(command_volumes, default=0.0),
+            "maximum_predicted_amplitude_error": max(
+                amplitude_predictions,
+                default=0.0,
+            ),
+        },
         "audio_config": asdict(config),
         "required_resource_pack": {
             "namespace": bank_namespace,
@@ -111,6 +174,7 @@ def convert_audio(
             "frequency_step": config.frequency_step,
             "phase_count": config.phase_count,
             "grain_level": bank_grain_level,
+            "device_profile": device_profile,
         },
         "data_pack": {
             "pack_format": data_pack_format,

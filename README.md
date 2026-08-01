@@ -9,10 +9,13 @@
 - STFT 幅度、相位分析；
 - 按频段选取主要频率；
 - 相邻帧峰值轨迹跟踪和频点切换迟滞；
+- A-weighting 感知排序和 Bark 频带心理声学掩蔽；
+- 可校准的 Minecraft 增益和非线性音量响应；
 - 频率和相位量化；
 - 本地 `preview.wav` 重建；
 - Minecraft 数据包 ZIP；
 - 通用正弦资源包 ZIP；
+- `low` / `normal` / `high` 三档设备资源包集；
 - scoreboard 播放器和分层帧分发，避免长 `schedule` 链。
 
 ## 默认目标
@@ -102,6 +105,26 @@ assets/wav2mc/sounds.json
 
 每个颗粒为 100 ms，头尾由平方根 Hann 窗压到零附近。相邻 tick 以 50% 重叠播放，以降低片段边界的咔嗒声。
 
+## 按设备性能生成资源包集
+
+```bash
+wav2mc bank-build-set --output-dir output/device_banks
+```
+
+| 档位 | 频率上限 | 频率步长 | 相位数 | 默认质量 |
+| --- | ---: | ---: | ---: | --- |
+| `low` | 2000 Hz | 40 Hz | 8 | `low` |
+| `normal` | 4000 Hz | 20 Hz | 8 | `normal` |
+| `high` | 8000 Hz | 20 Hz | 16 | `high` |
+
+命令会生成三个独立 ZIP 和 `wav2mc-device-packs.json` 清单。转换时使用同一档位，会自动匹配频率、相位、质量和 namespace：
+
+```bash
+wav2mc convert input.wav --device-profile normal
+```
+
+对应资源包 namespace 为 `wav2mc_normal`。可用 `--profiles low normal` 只生成部分档位。
+
 ## 3. 转换音频
 
 ```bash
@@ -121,6 +144,23 @@ output/demo_song_analysis.json
 ```
 
 先听 `preview.wav`。本地预览已经使用相同的频率、相位、窗口和稀疏分量限制；如果预览本身失真严重，应先调整参数，而不是直接进入游戏测试。
+
+## 响度校准
+
+默认假设 Minecraft 的实际增益和 `/playsound` 音量都是线性的。如实测播放比预览安静，可写入实测模型：
+
+```bash
+wav2mc convert input.wav \
+  --minecraft-gain 0.85 \
+  --minecraft-volume-exponent 1.08 \
+  --max-command-volume 1.0
+```
+
+`--minecraft-gain` 是命令音量为 1.0 时的“游戏内实测幅值 / 参考幅值”；指数描述命令音量的非线性响应。转换器会反解每个 `/playsound` 音量，并在超出可复现范围时同比缩放预览与数据包。分析报告会记录校准值、最大命令音量和预测误差。
+
+## 心理声学掩蔽
+
+掩蔽默认开启。分析器先用 A-weighting 计算感知显著度，再用非对称 Bark 扩散阈值剔除强峰附近不可闻的弱峰。较高的 `--masking-offset-db` 会保留更多分量；调试时可用 `--no-psychoacoustic-masking` 关闭。
 
 ## 4. 安装到 Minecraft
 
@@ -168,6 +208,7 @@ wav2mc convert input.wav --quality high --gain 0.8
 - `--phases`
 - `bank-build --grain-level` 与 `convert --bank-grain-level`
 - 资源包 namespace 与转换时的 `--bank-namespace`
+- 使用设备档位时，`bank-build-set` 与 `convert --device-profile` 的档位相同
 
 转换报告 `*_analysis.json` 会记录所需资源包参数。
 
@@ -192,9 +233,9 @@ wav2mc convert test_tone.wav --name test_tone --max-frequency 2000
 ## 推荐开发方向
 
 1. （已完成）给频率轨迹增加峰值跟踪，减少相邻帧频点抖动。
-2. 改进幅值标定，使 Minecraft 实际响度更接近本地预览。
-3. 增加心理声学掩蔽，而不是单纯按幅度选峰。
-4. 生成多套分频资源包，按设备性能选择。
+2. （已完成）改进幅值标定，使 Minecraft 实际响度更接近本地预览。
+3. （已完成）增加心理声学掩蔽，而不是单纯按幅度选峰。
+4. （已完成）生成多套分频资源包，按设备性能选择。
 5. 增加游戏内进度、暂停、跳转和多监听者控制。
 6. 编写 Fabric 客户端模组，提供更准确的音频调度；数据包模式仍保留为兼容后端。
 
@@ -208,6 +249,7 @@ src/wav2mc/
 ├── cli.py        命令行入口
 ├── config.py     默认参数和质量档位
 ├── datapack.py   数据包和帧分发树
+├── loudness.py   Minecraft 响度校准模型
 ├── pipeline.py   转换流程
 ├── preview.py    本地重建预览
 └── utils.py      通用工具

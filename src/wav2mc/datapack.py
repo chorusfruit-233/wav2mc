@@ -4,6 +4,8 @@ from pathlib import Path
 
 from .analysis import AudioFrame
 from .bank import sound_event_name
+from .config import LoudnessCalibration
+from .loudness import minecraft_command_volume
 from .utils import temporary_directory, write_json, zip_directory
 
 
@@ -76,7 +78,11 @@ def build_data_pack(
     pack_format: int,
     layout: str,
     category: str = "record",
+    bank_grain_level: float = 1.0,
+    loudness_calibration: LoudnessCalibration | None = None,
 ) -> None:
+    calibration = loudness_calibration or LoudnessCalibration()
+    calibration.validate()
     function_dir, tag_dir = _layout_directories(layout)
     frame_count = len(frames)
 
@@ -98,6 +104,12 @@ def build_data_pack(
                 "frames": frame_count,
                 "tick_rate": 20,
                 "category": category,
+                "bank_grain_level": bank_grain_level,
+                "loudness_calibration": {
+                    "minecraft_gain": calibration.minecraft_gain,
+                    "volume_exponent": calibration.volume_exponent,
+                    "max_command_volume": calibration.max_command_volume,
+                },
             },
         )
 
@@ -109,7 +121,11 @@ def build_data_pack(
             lines = []
             for component in frame.components:
                 event = sound_event_name(component.frequency, component.phase_index)
-                volume = max(0.0, min(1.0, component.amplitude))
+                volume = minecraft_command_volume(
+                    component.amplitude,
+                    bank_grain_level,
+                    calibration,
+                )
                 lines.append(
                     "execute as @a[tag=wav2mc_listener] at @s run playsound "
                     f"{bank_namespace}:{event} {category} @s ~ ~ ~ "

@@ -2,15 +2,19 @@ from __future__ import annotations
 
 import argparse
 import sys
+from dataclasses import replace
 from pathlib import Path
 
-from .bank import build_resource_pack
+from .bank import build_device_pack_set, build_resource_pack
 from .config import (
+    DEVICE_PROFILES,
     DEFAULT_DATA_PACK_FORMAT,
     DEFAULT_LAYOUT,
     DEFAULT_RESOURCE_PACK_FORMAT,
     QUALITY_PROFILES,
     AudioConfig,
+    LoudnessCalibration,
+    device_audio_config,
 )
 from .pipeline import convert_audio
 
@@ -41,7 +45,16 @@ def _audio_config(args: argparse.Namespace) -> AudioConfig:
         raise ValueError("frequency-step and phases must be positive")
     if config.min_frequency <= 0 or config.max_frequency < config.min_frequency:
         raise ValueError("Invalid frequency range")
+    profile_name = getattr(args, "device_profile", None)
+    if profile_name:
+        config = device_audio_config(config, DEVICE_PROFILES[profile_name])
     return config
+
+
+def _profile_namespace(value: str | None, profile_name: str | None) -> str:
+    if value:
+        return value
+    return f"wav2mc_{profile_name}" if profile_name else "wav2mc"
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -64,9 +77,38 @@ def build_parser() -> argparse.ArgumentParser:
         default=Path("output/wav2mc_sine_bank.zip"),
     )
     bank_parser.add_argument("--pack-format", type=int, default=DEFAULT_RESOURCE_PACK_FORMAT)
-    bank_parser.add_argument("--namespace", default="wav2mc")
+    bank_parser.add_argument("--namespace", default=None)
     bank_parser.add_argument("--grain-level", type=float, default=1.0)
+    bank_parser.add_argument(
+        "--device-profile",
+        choices=sorted(DEVICE_PROFILES),
+        default=None,
+    )
     _add_audio_config(bank_parser)
+
+    set_parser = subparsers.add_parser(
+        "bank-build-set",
+        help="Build low, normal, and high device-tier resource packs",
+    )
+    set_parser.add_argument(
+        "--output-dir",
+        type=Path,
+        default=Path("output/device_banks"),
+    )
+    set_parser.add_argument(
+        "--profiles",
+        nargs="+",
+        choices=sorted(DEVICE_PROFILES),
+        default=list(DEVICE_PROFILES),
+    )
+    set_parser.add_argument(
+        "--pack-format",
+        type=int,
+        default=DEFAULT_RESOURCE_PACK_FORMAT,
+    )
+    set_parser.add_argument("--namespace-prefix", default="wav2mc")
+    set_parser.add_argument("--grain-level", type=float, default=1.0)
+    _add_audio_config(set_parser)
 
     convert_parser = subparsers.add_parser(
         "convert",
@@ -78,7 +120,7 @@ def build_parser() -> argparse.ArgumentParser:
     convert_parser.add_argument(
         "--quality",
         choices=sorted(QUALITY_PROFILES),
-        default="normal",
+        default=None,
     )
     convert_parser.add_argument(
         "--data-pack-format",
@@ -91,10 +133,45 @@ def build_parser() -> argparse.ArgumentParser:
         default=DEFAULT_LAYOUT,
         help="modern: data/<ns>/function; legacy: data/<ns>/functions",
     )
-    convert_parser.add_argument("--bank-namespace", default="wav2mc")
+    convert_parser.add_argument("--bank-namespace", default=None)
     convert_parser.add_argument("--category", default="record")
     convert_parser.add_argument("--gain", type=float, default=1.0)
     convert_parser.add_argument("--bank-grain-level", type=float, default=1.0)
+    convert_parser.add_argument(
+        "--device-profile",
+        choices=sorted(DEVICE_PROFILES),
+        default=None,
+    )
+    convert_parser.add_argument(
+        "--psychoacoustic-masking",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Enable A-weighted Bark-domain masking",
+    )
+    convert_parser.add_argument(
+        "--masking-offset-db",
+        type=float,
+        default=None,
+        help="Higher values retain more peaks (quality profile default if omitted)",
+    )
+    convert_parser.add_argument(
+        "--minecraft-gain",
+        type=float,
+        default=1.0,
+        help="Measured Minecraft/reference amplitude ratio at volume 1.0",
+    )
+    convert_parser.add_argument(
+        "--minecraft-volume-exponent",
+        type=float,
+        default=1.0,
+        help="Exponent of the measured command-volume response curve",
+    )
+    convert_parser.add_argument(
+        "--max-command-volume",
+        type=float,
+        default=1.0,
+        help="Maximum /playsound volume emitted by the data pack",
+    )
     _add_audio_config(convert_parser)
 
     return parser
@@ -107,18 +184,53 @@ def main(argv: list[str] | None = None) -> int:
     try:
         config = _audio_config(args)
         if args.command == "bank-build":
+            namespace = _profile_namespace(args.namespace, args.device_profile)
             print(f"Building resource pack: {args.output}")
             build_resource_pack(
                 output=args.output,
                 config=config,
                 pack_format=args.pack_format,
-                namespace=args.namespace,
+                namespace=namespace,
                 grain_level=args.grain_level,
+                device_profile=args.device_profile,
             )
             print(f"Created: {args.output.resolve()}")
             return 0
 
+        if args.command == "bank-build-set":
+            print(f"Building device pack set: {args.output_dir}")
+            outputs = build_device_pack_set(
+                output_dir=args.output_dir,
+                base_config=config,
+                pack_format=args.pack_format,
+                namespace_prefix=args.namespace_prefix,
+                grain_level=args.grain_level,
+                profile_names=tuple(args.profiles),
+            )
+            for label, path in outputs.items():
+                print(f"{label}: {path.resolve()}")
+            return 0
+
         if args.command == "convert":
+            profile = (
+                DEVICE_PROFILES[args.device_profile]
+                if args.device_profile
+                else None
+            )
+            quality_name = args.quality or (
+                profile.quality_name if profile else "normal"
+            )
+            quality = QUALITY_PROFILES[quality_name]
+            if args.masking_offset_db is not None:
+                quality = replace(
+                    quality,
+                    masking_offset_db=args.masking_offset_db,
+                )
+            calibration = LoudnessCalibration(
+                minecraft_gain=args.minecraft_gain,
+                volume_exponent=args.minecraft_volume_exponent,
+                max_command_volume=args.max_command_volume,
+            )
             song_name = args.name or args.input.stem
             print(f"Converting: {args.input}")
             outputs = convert_audio(
@@ -126,13 +238,19 @@ def main(argv: list[str] | None = None) -> int:
                 output_dir=args.output_dir,
                 song_name=song_name,
                 config=config,
-                quality=QUALITY_PROFILES[args.quality],
+                quality=quality,
                 data_pack_format=args.data_pack_format,
                 layout=args.layout,
-                bank_namespace=args.bank_namespace,
+                bank_namespace=_profile_namespace(
+                    args.bank_namespace,
+                    args.device_profile,
+                ),
                 category=args.category,
                 requested_gain=args.gain,
                 bank_grain_level=args.bank_grain_level,
+                loudness_calibration=calibration,
+                psychoacoustic_masking=args.psychoacoustic_masking,
+                device_profile=args.device_profile,
             )
             for label, path in outputs.items():
                 print(f"{label}: {path.resolve()}")
