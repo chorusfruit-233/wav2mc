@@ -36,6 +36,17 @@ def test_gui_mode_summary_reports_quantized_high_frequency() -> None:
     assert "每帧最多 24 个分量" in summary
 
 
+@pytest.mark.parametrize(
+    ("gain_db", "expected"),
+    ((-6.0, 0.501187), (0.0, 1.0), (6.0, 1.995262)),
+)
+def test_gui_converts_db_gain_to_linear_multiplier(
+    gain_db: float,
+    expected: float,
+) -> None:
+    assert gui.gain_multiplier_from_db(gain_db) == pytest.approx(expected)
+
+
 def test_gui_conversion_output_paths_use_safe_namespace(tmp_path: Path) -> None:
     outputs = gui.conversion_output_paths(tmp_path, "My Song!")
 

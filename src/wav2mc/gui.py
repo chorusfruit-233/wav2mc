@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import os
 import subprocess
 import sys
@@ -29,6 +30,8 @@ from .utils import safe_namespace
 
 
 _T = TypeVar("_T")
+MIN_GUI_GAIN_DB = -24.0
+MAX_GUI_GAIN_DB = 12.0
 
 
 class _ScrollableFrame(ttk.Frame):
@@ -97,6 +100,12 @@ def mode_audio_config(mode: str) -> AudioConfig:
     return device_audio_config(AudioConfig(), profile)
 
 
+def gain_multiplier_from_db(gain_db: float) -> float:
+    if not math.isfinite(gain_db):
+        raise ValueError("Gain must be a finite dB value")
+    return 10.0 ** (gain_db / 20.0)
+
+
 def mode_summary(mode: str) -> str:
     config = mode_audio_config(mode)
     profile = DEVICE_PROFILES[mode]
@@ -144,7 +153,7 @@ class Wav2McApp:
         )
         self.audio_stream_var = tk.IntVar(value=0)
         self.mode_var = tk.StringVar(value="normal")
-        self.gain_var = tk.DoubleVar(value=1.0)
+        self.gain_db_var = tk.StringVar(value="0.0")
         self.gain_text_var = tk.StringVar(value="1.00x")
         self.masking_var = tk.BooleanVar(value=True)
         self.bank_output_var = tk.StringVar(value="output/device_banks")
@@ -155,7 +164,7 @@ class Wav2McApp:
         self._configure_styles()
         self._build_layout()
         self.mode_var.trace_add("write", self._update_mode_summary)
-        self.gain_var.trace_add("write", self._update_gain_text)
+        self.gain_db_var.trace_add("write", self._update_gain_text)
         self._update_mode_summary()
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
 
@@ -255,12 +264,6 @@ class Wav2McApp:
             text=f"Minecraft Java {DEFAULT_MINECRAFT_VERSION}",
             style="Version.TLabel",
         ).grid(row=0, column=1, sticky="e")
-        ttk.Label(
-            header,
-            text="音频数据包与正弦颗粒资源包",
-            style="Muted.TLabel",
-        ).grid(row=1, column=0, columnspan=2, sticky="w", pady=(2, 0))
-
         notebook = ttk.Notebook(shell)
         notebook.grid(row=1, column=0, sticky="nsew")
         convert_tab = ttk.Frame(notebook, padding=(0, 14, 0, 0))
@@ -373,20 +376,32 @@ class Wav2McApp:
         )
         gain_row = ttk.Frame(options, style="Panel.TFrame")
         gain_row.grid(row=1, column=1, sticky="ew", pady=5)
-        gain_row.columnconfigure(0, weight=1)
-        ttk.Scale(
+        ttk.Spinbox(
             gain_row,
-            from_=0.1,
-            to=2.0,
-            variable=self.gain_var,
-        ).grid(row=0, column=0, sticky="ew")
+            from_=MIN_GUI_GAIN_DB,
+            to=MAX_GUI_GAIN_DB,
+            increment=0.5,
+            format="%.1f",
+            width=8,
+            justify=tk.RIGHT,
+            textvariable=self.gain_db_var,
+        ).grid(row=0, column=0, sticky="w")
+        ttk.Label(
+            gain_row,
+            text="dB",
+            style="Panel.TLabel",
+        ).grid(row=0, column=1, padx=(6, 14))
         ttk.Label(
             gain_row,
             textvariable=self.gain_text_var,
-            style="Panel.TLabel",
-            width=7,
-            anchor="e",
-        ).grid(row=0, column=1, padx=(10, 0))
+            style="PanelMuted.TLabel",
+            width=9,
+        ).grid(row=0, column=2)
+        ttk.Button(
+            gain_row,
+            text="归零",
+            command=lambda: self.gain_db_var.set("0.0"),
+        ).grid(row=0, column=3, padx=(10, 0))
 
         ttk.Label(options, text="心理声学", style="Panel.TLabel").grid(
             row=2, column=0, sticky="w", padx=(0, 12), pady=5
@@ -550,7 +565,12 @@ class Wav2McApp:
         self.mode_summary_var.set(summary)
 
     def _update_gain_text(self, *_args: object) -> None:
-        self.gain_text_var.set(f"{self.gain_var.get():.2f}x")
+        try:
+            multiplier = gain_multiplier_from_db(float(self.gain_db_var.get()))
+        except ValueError:
+            self.gain_text_var.set("无效")
+        else:
+            self.gain_text_var.set(f"{multiplier:.2f}x")
 
     def _start_conversion(self) -> None:
         source = Path(self.input_var.get()).expanduser()
@@ -572,11 +592,19 @@ class Wav2McApp:
         mode = self.mode_var.get()
         try:
             stream = self.audio_stream_var.get()
-            gain = self.gain_var.get()
+            gain_db = float(self.gain_db_var.get())
             masking = self.masking_var.get()
             config = mode_audio_config(mode)
         except (tk.TclError, ValueError) as exc:
             messagebox.showerror("参数错误", str(exc), parent=self.root)
+            return
+        if not MIN_GUI_GAIN_DB <= gain_db <= MAX_GUI_GAIN_DB:
+            messagebox.showerror(
+                "参数错误",
+                f"转换增益必须在 {MIN_GUI_GAIN_DB:.0f} 到 "
+                f"+{MAX_GUI_GAIN_DB:.0f} dB 之间。",
+                parent=self.root,
+            )
             return
         if stream < 0:
             messagebox.showerror("参数错误", "音轨索引不能为负数。", parent=self.root)
@@ -584,6 +612,7 @@ class Wav2McApp:
 
         profile = DEVICE_PROFILES[mode]
         quality = QUALITY_PROFILES[profile.quality_name]
+        gain = gain_multiplier_from_db(gain_db)
 
         def work() -> Mapping[str, Path]:
             return convert_audio(
