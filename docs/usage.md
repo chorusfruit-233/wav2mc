@@ -241,7 +241,15 @@ wav2mc convert input.wav \
 - 噪声层通过频谱平坦度选择 16 个感知频带中的随机残差，保留齿音、环境声、失真和镲片纹理。
 - 瞬态层使用 25 ms 窗、10 ms 帧移和频谱通量，保留所有快速起音、点击、辅音和打击声。
 
-正弦与残差采用独立峰值标定，瞬态峰值不会触发整首音乐同比降音量。`normal/high/experimental` 每帧额外最多使用 4/6/8 个噪声和 4/6/8 个瞬态组件；瞬态只在检测到起音时出现。
+正弦层采用全局安全缩放。瞬态和噪声使用两个独立的逐帧限幅总线，默认增益上限分别为 0.40 和 0.70。瞬态先使用可用峰值余量，再加入噪声；可能超过 0.88 时立即降低当前层，余量恢复后约 200 ms 平滑回升。这样不会因为某个噪声频带压低鼓点，也不会让一次强攻击控制整首音乐的残差音量。
+
+噪声层会按频带连续跟踪状态，短暂低于阈值时保留轨迹两帧。每次连续出现时按确定序列推进变体，利用 100 ms 颗粒的 50% 重叠窗完成交叉过渡，避免固定颗粒产生周期音色。跟踪中的频带使用稍低的关闭阈值，减少门限附近的闪烁。
+
+频谱平坦度不仅用于选择噪声频带，也会以 `flatness^0.25` 作为幅值置信度。接近随机噪声的镲片、齿音和环境纹理能获得较完整的幅值；偏音调、低平坦度的残差会自动减弱，不再把整段频带强行替换成合成噪声。
+
+瞬态层使用双阈值滞回：超过高阈值才触发，回落到低阈值后才重新准备，并设有 50 ms 冷却和 100 ms 强制重置。候选频带还必须比前一短帧增长至少 2 dB，或新增能量达到当前能量的 35%。这些限制会合并同一次攻击里的重复峰，同时保留间隔明确的连续鼓点。
+
+`normal/high/experimental` 每帧额外最多使用 4/6/8 个噪声和 4/6/8 个瞬态组件；瞬态只在检测到起音时出现。
 
 - `--no-hybrid-residual`：关闭通用残差，用于配合升级前的纯正弦资源包。
 - `--residual-variants`：每个频带的确定性噪声变体数，默认 4；资源包和转换命令必须相同。
@@ -308,7 +316,8 @@ wav2mc convert input.wav \
 - `audio_config.frequency_grid`、`frequency_bands` 和 `frequency_count`：实际网格与资源数量。
 - `quality_profile.band_budgets`：每个频段的硬分量预算。
 - `component_model`：三层的平均与最大组件数量。
-- `layer_scales`：正弦层和残差层各自的安全缩放。
+- `layer_scales.tone`：正弦层的全局安全缩放。
+- `layer_scales.residual.noise` / `transient`：两个残差总线各自的 `gain_limit`、均值、最小值、最大值、P10 和 P90；`layer_scales.residual.release_ms` 是共同的恢复时间。
 - `preview_peak`：本地预览的峰值。
 - `average_components_per_frame` 和 `estimated_playsound_commands_per_second`：客户端负载指标。
 - `loudness_calibration.maximum_predicted_amplitude_error`：命令音量保留 6 位小数后的模型误差。

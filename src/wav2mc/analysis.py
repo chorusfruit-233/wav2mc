@@ -215,6 +215,7 @@ def _transient_components_by_frame(
         (short_frame_count, len(band_masks)),
         dtype=np.float32,
     )
+    band_levels = np.zeros_like(band_increases)
     previous_magnitude = np.zeros(frequencies.size, dtype=np.float64)
 
     for short_index in range(short_frame_count):
@@ -239,6 +240,7 @@ def _transient_components_by_frame(
                 np.sqrt(2.0 * np.sum(magnitude[indices] ** 2)) / short_size
             )
             band_increases[short_index, band_position] = delta_rms
+            band_levels[short_index, band_position] = current_rms
             current_levels[band_position] = current_rms
         weighted_increase = float(
             np.dot(band_increases[short_index], band_weights)
@@ -250,12 +252,25 @@ def _transient_components_by_frame(
     usable_novelty = novelty[1:]
     median = float(np.median(usable_novelty))
     mad = float(np.median(np.abs(usable_novelty - median)))
-    threshold = max(0.08, median + 3.0 * 1.4826 * mad)
+    robust_deviation = 1.4826 * mad
+    high_threshold = max(0.09, median + 3.0 * robust_deviation)
+    low_threshold = max(
+        0.045,
+        median + robust_deviation,
+        high_threshold * 0.4,
+    )
     components_by_frame: dict[int, dict[int, ResidualComponent]] = {}
+    armed = True
+    last_trigger = -100
 
     for short_index in range(1, short_frame_count):
         value = float(novelty[short_index])
-        if value < threshold:
+        if not armed:
+            if value <= low_threshold or short_index - last_trigger >= 10:
+                armed = True
+            else:
+                continue
+        if short_index - last_trigger < 5 or value < high_threshold:
             continue
         local_low = max(1, short_index - 2)
         local_high = min(short_frame_count, short_index + 3)
@@ -272,15 +287,32 @@ def _transient_components_by_frame(
         if maximum <= 1e-10:
             continue
         floor = maximum * 10.0 ** (-24.0 / 20.0)
+        previous_levels = band_levels[short_index - 1]
+        current_levels = band_levels[short_index]
         candidates = [
             position
             for position, amplitude in enumerate(amplitudes)
             if float(amplitude) >= floor
+            and (
+                20.0
+                * np.log10(
+                    max(float(current_levels[position]), 1e-12)
+                    / max(float(previous_levels[position]), 1e-12)
+                )
+                >= 2.0
+                or float(amplitude)
+                / max(float(current_levels[position]), 1e-12)
+                >= 0.35
+            )
         ]
+        if not candidates:
+            continue
         candidates.sort(
             key=lambda position: float(amplitudes[position] * band_weights[position]),
             reverse=True,
         )
+        armed = False
+        last_trigger = short_index
 
         frame_components = components_by_frame.setdefault(output_index, {})
         for position in candidates[: quality.max_transient_components]:
@@ -329,6 +361,7 @@ def _noise_residual_components(
     frame_index: int,
     reference_amplitude: float,
     excluded_bands: set[int],
+    noise_tracks: dict[int, tuple[int, int]],
 ) -> tuple[ResidualComponent, ...]:
     if (
         not config.hybrid_residual
@@ -350,7 +383,7 @@ def _noise_residual_components(
     floor = reference_amplitude * 10.0 ** (
         quality.residual_floor_db / 20.0
     )
-    candidates: list[tuple[float, ResidualComponent]] = []
+    candidates: list[tuple[float, int, int, int, float]] = []
 
     for band_index, low, high, indices in band_masks:
         if band_index in excluded_bands or not indices.size:
@@ -359,7 +392,9 @@ def _noise_residual_components(
         band_rms = float(
             np.sqrt(2.0 * np.sum(band_power)) / config.window_size
         )
-        if band_rms < floor:
+        tracked = band_index in noise_tracks
+        effective_floor = floor * (0.5 if tracked else 1.0)
+        if band_rms < effective_floor:
             continue
 
         source_band_power = original_power[indices]
@@ -370,7 +405,7 @@ def _noise_residual_components(
                 np.exp(np.mean(np.log(np.maximum(source_band_power, 1e-20))))
                 / arithmetic_mean
             )
-        if flatness < 0.08:
+        if flatness < (0.05 if tracked else 0.08):
             continue
         center = (low + high) / 2.0
         perceptual_db = float(
@@ -382,7 +417,32 @@ def _noise_residual_components(
             + perceptual_db
         )
 
-        variant = (frame_index * 3 + band_index) % config.residual_variant_count
+        candidates.append(
+            (score, band_index, low, high, band_rms)
+        )
+
+    candidates.sort(key=lambda item: item[0], reverse=True)
+    selected = candidates[: quality.max_noise_components]
+    selected_bands = {band_index for _, band_index, _, _, _ in selected}
+    for band_index, (variant, missing_frames) in tuple(noise_tracks.items()):
+        if band_index in selected_bands:
+            continue
+        missing_frames += 1
+        if missing_frames > 2:
+            del noise_tracks[band_index]
+        else:
+            noise_tracks[band_index] = (variant, missing_frames)
+
+    components = []
+    for _, band_index, low, high, band_rms in selected:
+        track = noise_tracks.get(band_index)
+        if track is None:
+            variant = (
+                frame_index * 3 + band_index
+            ) % config.residual_variant_count
+        else:
+            variant = (track[0] + 1) % config.residual_variant_count
+        noise_tracks[band_index] = (variant, 0)
         grain_rms = residual_grain_reference_rms(
             config.sample_rate,
             config.window_size,
@@ -392,29 +452,22 @@ def _noise_residual_components(
             variant,
             "noise",
         )
-        coefficient = band_rms / max(
+        noise_confidence = float(np.clip(flatness, 0.0, 1.0) ** 0.25)
+        coefficient = band_rms * noise_confidence / max(
             grain_rms * np.sqrt(2.0),
             1e-12,
         )
-        candidates.append(
-            (
-                score,
-                ResidualComponent(
-                    kind="noise",
-                    band_index=band_index,
-                    low_frequency=low,
-                    high_frequency=high,
-                    variant=variant,
-                    amplitude=min(coefficient, 1.0),
-                ),
+        components.append(
+            ResidualComponent(
+                kind="noise",
+                band_index=band_index,
+                low_frequency=low,
+                high_frequency=high,
+                variant=variant,
+                amplitude=min(coefficient, 1.0),
             )
         )
-
-    candidates.sort(key=lambda item: item[0], reverse=True)
-    return tuple(
-        component
-        for _, component in candidates[: quality.max_noise_components]
-    )
+    return tuple(components)
 
 
 def analyse_audio(
@@ -459,6 +512,7 @@ def analyse_audio(
 
     frames: list[AudioFrame] = []
     previous_indices: set[int] = set()
+    noise_tracks: dict[int, tuple[int, int]] = {}
 
     for frame_index in range(frame_count):
         start = frame_index * hop
@@ -477,6 +531,7 @@ def analyse_audio(
                 )
             )
             previous_indices.clear()
+            noise_tracks.clear()
             continue
 
         floor = maximum * 10.0 ** (quality.relative_floor_db / 20.0)
@@ -547,6 +602,7 @@ def analyse_audio(
             frame_index,
             maximum,
             {component.band_index for component in transients},
+            noise_tracks,
         )
         frames.append(
             AudioFrame(
@@ -584,4 +640,33 @@ def scale_frame_layers(
             ),
         )
         for frame in frames
+    ]
+
+
+def scale_frame_residuals(
+    frames: list[AudioFrame],
+    tone_scale: float,
+    residual_scales: dict[str, list[float]],
+) -> list[AudioFrame]:
+    if any(len(frames) != len(scales) for scales in residual_scales.values()):
+        raise ValueError("A scale is required for every frame in each residual layer")
+    return [
+        replace(
+            frame,
+            components=tuple(
+                replace(component, amplitude=component.amplitude * tone_scale)
+                for component in frame.components
+            ),
+            residual_components=tuple(
+                replace(
+                    component,
+                    amplitude=(
+                        component.amplitude
+                        * residual_scales[component.kind][index]
+                    ),
+                )
+                for component in frame.residual_components
+            ),
+        )
+        for index, frame in enumerate(frames)
     ]

@@ -5,7 +5,7 @@ from pathlib import Path
 
 import numpy as np
 
-from .analysis import analyse_audio, scale_frame_layers
+from .analysis import AudioFrame, analyse_audio, scale_frame_residuals
 from .audio import load_mono, peak_normalize, preprocess_audio, write_wav
 from .config import (
     DEFAULT_MINECRAFT_VERSION,
@@ -20,8 +20,130 @@ from .loudness import (
     minecraft_command_volume,
     predicted_minecraft_amplitude,
 )
-from .preview import calculate_safe_scale, synthesize_preview
+from .preview import (
+    calculate_safe_scale,
+    synthesize_preview,
+    synthesize_residual_frame,
+)
 from .utils import safe_namespace, temporary_directory, write_json
+
+
+RESIDUAL_GAIN_LIMITS = {
+    "noise": 0.70,
+    "transient": 0.40,
+}
+RESIDUAL_LAYER_ORDER = ("transient", "noise")
+
+
+def _maximum_additive_scale(
+    base: np.ndarray,
+    addition: np.ndarray,
+    maximum_scale: float,
+    target_peak: float,
+) -> float:
+    limit = maximum_scale
+    positive = addition > 1e-12
+    if np.any(positive):
+        limit = min(
+            limit,
+            float(np.min((target_peak - base[positive]) / addition[positive])),
+        )
+    negative = addition < -1e-12
+    if np.any(negative):
+        limit = min(
+            limit,
+            float(np.min((-target_peak - base[negative]) / addition[negative])),
+        )
+    return float(np.clip(limit, 0.0, maximum_scale))
+
+
+def _residual_frame_scales(
+    frames: list[AudioFrame],
+    config: AudioConfig,
+    tone_preview: np.ndarray,
+    tone_scale: float,
+    requested_gain: float,
+    maximum_supported: float,
+    target_peak: float = 0.88,
+    release_alpha: float = 0.25,
+    gain_limits: dict[str, float] | None = None,
+) -> dict[str, list[float]]:
+    limits = dict(gain_limits or RESIDUAL_GAIN_LIMITS)
+    if set(limits) != set(RESIDUAL_LAYER_ORDER):
+        raise ValueError("Residual gain limits must define noise and transient")
+    if any(not 0.0 <= limit <= 1.0 for limit in limits.values()):
+        raise ValueError("Residual gain limits must be between 0 and 1")
+
+    residual_mix = np.zeros_like(tone_preview)
+    scales = {kind: [] for kind in RESIDUAL_LAYER_ORDER}
+    previous_scales = {
+        kind: requested_gain * limits[kind]
+        for kind in RESIDUAL_LAYER_ORDER
+    }
+
+    for frame in frames:
+        start = frame.index * config.hop_size
+        end = start + config.window_size
+        for kind in RESIDUAL_LAYER_ORDER:
+            maximum_component = max(
+                (
+                    component.amplitude
+                    for component in frame.residual_components
+                    if component.kind == kind
+                ),
+                default=0.0,
+            )
+            scale_cap = requested_gain * limits[kind]
+            if maximum_component > 0.0:
+                scale_cap = min(
+                    scale_cap,
+                    maximum_supported / maximum_component,
+                )
+
+            addition = synthesize_residual_frame(frame, config, kind=kind)
+            base = tone_scale * tone_preview[start:end] + residual_mix[start:end]
+            raw_limit = _maximum_additive_scale(
+                base,
+                addition,
+                scale_cap,
+                target_peak,
+            )
+            recovery_limit = scale_cap
+            previous_scale = previous_scales[kind]
+            if scale_cap > previous_scale:
+                recovery_limit = previous_scale + release_alpha * (
+                    scale_cap - previous_scale
+                )
+            frame_scale = min(raw_limit, recovery_limit)
+            residual_mix[start:end] += frame_scale * addition
+            scales[kind].append(frame_scale)
+            previous_scales[kind] = frame_scale
+
+    return scales
+
+
+def _scale_statistics(
+    frames: list[AudioFrame],
+    scales: list[float],
+    kind: str,
+) -> dict[str, float]:
+    active = np.asarray(
+        [
+            scale
+            for frame, scale in zip(frames, scales, strict=True)
+            if any(component.kind == kind for component in frame.residual_components)
+        ],
+        dtype=np.float64,
+    )
+    if not active.size:
+        active = np.asarray(scales, dtype=np.float64)
+    return {
+        "mean": float(active.mean()),
+        "minimum": float(active.min()),
+        "maximum": float(active.max()),
+        "p10": float(np.percentile(active, 10)),
+        "p90": float(np.percentile(active, 90)),
+    }
 
 
 def convert_audio(
@@ -81,9 +203,7 @@ def convert_audio(
         psychoacoustic_masking=psychoacoustic_masking,
     )
     tone_frames = [replace(frame, residual_components=()) for frame in frames]
-    residual_frames = [replace(frame, components=()) for frame in frames]
     tone_preview = synthesize_preview(tone_frames, config)
-    residual_preview = synthesize_preview(residual_frames, config)
     tone_scale = calculate_safe_scale(
         tone_preview,
         target_peak=0.88,
@@ -97,14 +217,6 @@ def convert_audio(
         ),
         default=0.0,
     )
-    maximum_residual_component = max(
-        (
-            component.amplitude
-            for frame in frames
-            for component in frame.residual_components
-        ),
-        default=0.0,
-    )
     maximum_supported = maximum_reproducible_amplitude(
         bank_grain_level,
         calibration,
@@ -115,30 +227,18 @@ def convert_audio(
             maximum_supported / maximum_tone_component,
         )
 
-    residual_scale = requested_gain
-    if maximum_residual_component > 0.0:
-        residual_scale = min(
-            residual_scale,
-            maximum_supported / maximum_residual_component,
-        )
-    if residual_preview.size and np.any(residual_preview):
-        combined = tone_scale * tone_preview + residual_scale * residual_preview
-        if float(np.max(np.abs(combined))) > 0.88:
-            low = 0.0
-            high = residual_scale
-            for _ in range(32):
-                midpoint = (low + high) / 2.0
-                combined = tone_scale * tone_preview + midpoint * residual_preview
-                if float(np.max(np.abs(combined))) <= 0.88:
-                    low = midpoint
-                else:
-                    high = midpoint
-            residual_scale = low
-
-    target_frames = scale_frame_layers(
+    residual_scales = _residual_frame_scales(
         frames,
-        tone_scale=tone_scale,
-        residual_scale=residual_scale,
+        config,
+        tone_preview,
+        tone_scale,
+        requested_gain,
+        maximum_supported,
+    )
+    target_frames = scale_frame_residuals(
+        frames,
+        tone_scale,
+        residual_scales,
     )
     preview = synthesize_preview(target_frames, config)
     write_wav(preview_path, preview, config.sample_rate)
@@ -180,6 +280,10 @@ def convert_audio(
         dtype=int,
     )
     component_counts = tone_counts + noise_counts + transient_counts
+    residual_scale_statistics = {
+        kind: _scale_statistics(frames, residual_scales[kind], kind)
+        for kind in RESIDUAL_LAYER_ORDER
+    }
     amplitude_predictions = []
     command_volumes = []
     for frame in target_frames:
@@ -234,7 +338,15 @@ def convert_audio(
         "safe_scale": tone_scale,
         "layer_scales": {
             "tone": tone_scale,
-            "residual": residual_scale,
+            "residual": {
+                kind: {
+                    **residual_scale_statistics[kind],
+                    "gain_limit": RESIDUAL_GAIN_LIMITS[kind],
+                }
+                for kind in RESIDUAL_LAYER_ORDER
+            } | {
+                "release_ms": 200,
+            },
         },
         "preview_peak": float(np.max(np.abs(preview))) if preview.size else 0.0,
         "average_components_per_frame": (
@@ -249,6 +361,14 @@ def convert_audio(
         "component_model": {
             "name": "hybrid-tonal-transient-noise",
             "hybrid_residual_enabled": config.hybrid_residual,
+            "noise_amplitude_model": "band RMS * spectral flatness ^ 0.25",
+            "noise_variant_model": "tracked deterministic sequence",
+            "transient_hysteresis": {
+                "cooldown_ms": 50,
+                "forced_rearm_ms": 100,
+                "minimum_band_growth_db": 2.0,
+                "minimum_new_energy_ratio": 0.35,
+            },
             "average_tone_components_per_frame": (
                 float(tone_counts.mean()) if tone_counts.size else 0.0
             ),
