@@ -4,7 +4,7 @@
 
 The installable package uses a `src` layout. Production code lives in `src/wav2mc/`: `audio.py` handles decoding, `analysis.py` extracts components, `preview.py` reconstructs audio, and `loudness.py` calibrates Minecraft volume. `bank.py`/`datapack.py` generate packs, `pipeline.py` coordinates conversion, and `cli.py` defines the command. Keep shared defaults and data classes in `config.py`.
 
-Tests belong in `tests/`; reusable examples belong in `examples/`. `demo/` contains small reference inputs and generated artifacts. Do not commit routine build output from `output/`, virtual environments, caches, or generated `*.wav`, `*.ogg`, and `*.zip` files unless they are intentional demo fixtures.
+User guides belong in `docs/`; tests belong in `tests/`; reusable examples belong in `examples/`. `demo/` contains reference inputs and artifacts. Do not commit routine output, virtual environments, caches, or generated audio/ZIP files unless they are intentional demo fixtures.
 
 ## Build, Test, and Development Commands
 
