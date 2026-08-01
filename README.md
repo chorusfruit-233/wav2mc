@@ -18,6 +18,7 @@
 - Minecraft 数据包 ZIP；
 - 通用正弦资源包 ZIP；
 - 自适应频率网格和 `voice` / `normal` / `high` / `experimental` 四档资源包集；
+- 可执行转换和资源包生成的 Tkinter 桌面 GUI；
 - scoreboard 播放器和分层帧分发，避免长 `schedule` 链。
 
 ## 默认目标
@@ -37,6 +38,7 @@
 
 - Python 3.10+
 - FFmpeg，且 `ffmpeg` 命令可在 PATH 中使用
+- Tk 8.6+（仅 GUI 需要；部分 Linux 发行版需另装 `python3-tk`）
 - Python 包：NumPy、SoundFile
 
 ## 输入格式
@@ -66,6 +68,24 @@ pip install -e .
 ```bash
 wav2mc --help
 ```
+
+## 图形界面
+
+启动桌面 GUI：
+
+```bash
+wav2mc gui
+```
+
+也可以在启动时预选输入和输出目录：
+
+```bash
+wav2mc gui input.m4s --output-dir output
+```
+
+GUI 的“音频转换”页可选择 FFmpeg 支持的媒体、音轨、质量模式、增益和心理声学掩蔽；“资源包”页可生成当前模式或全部推荐模式。耗时任务在后台执行，结果路径和错误会显示在底部日志中。重新执行 `pip install -e .` 后，也可直接运行 `wav2mc-gui`。
+
+GUI 使用推荐模式预设，确保数据包和资源包 namespace、频率与相位一致。自定义频率网格、Minecraft 响度模型或旧版布局时仍使用 CLI。
 
 也可以不安装为命令，直接在项目根目录运行：
 
@@ -280,6 +300,7 @@ src/wav2mc/
 ├── cli.py        命令行入口
 ├── config.py     默认参数和质量档位
 ├── datapack.py   数据包和帧分发树
+├── gui.py        Tkinter 桌面界面
 ├── loudness.py   Minecraft 响度校准模型
 ├── pipeline.py   转换流程
 ├── preview.py    本地重建预览

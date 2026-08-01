@@ -8,7 +8,7 @@ wav2mc 把音频分析为每 tick 播放的正弦颗粒，生成 Minecraft Java 
 
 ## 环境与安装
 
-需要 Python 3.10+ 和 FFmpeg。先确认 FFmpeg 可用：
+需要 Python 3.10+ 和 FFmpeg。桌面 GUI 还需要 Tk 8.6+。先确认 FFmpeg 可用：
 
 ```bash
 ffmpeg -version
@@ -33,6 +33,34 @@ wav2mc --help
 ```
 
 每次打开新终端后都需要重新激活 `.venv`。不安装命令行入口时，也可在仓库根目录使用 `python run.py <command>`。
+
+部分 Linux 发行版没有随 Python 默认安装 Tk。例如 Debian/Ubuntu 可运行 `sudo apt install python3-tk`，然后用以下命令检查：
+
+```bash
+python -c "import tkinter; print(tkinter.TkVersion)"
+```
+
+## 图形界面
+
+直接启动：
+
+```bash
+wav2mc gui
+```
+
+启动时预选媒体文件和输出目录：
+
+```bash
+wav2mc gui /path/to/audio.m4s --output-dir output
+```
+
+重新执行 `python -m pip install -e .` 后，也可以运行独立入口 `wav2mc-gui`。
+
+“音频转换”页提供输入文件、输出目录、歌曲名称、音轨索引、质量模式、增益和心理声学掩蔽。选择 `normal` 后生成的数据包使用 `wav2mc_normal` namespace，必须配合相同模式的资源包。
+
+“资源包”页共享当前质量模式，可以只生成当前模式，或一次生成四个推荐模式。转换和资源包生成在后台线程执行；运行期间操作按钮会禁用，完成路径和 FFmpeg 错误会显示在窗口底部。
+
+GUI 只暴露推荐的匹配预设。需要自定义频率网格、相位数、响度校准、资源包格式或旧版数据包布局时，使用下文的 CLI 命令。
 
 ## 输入格式
 

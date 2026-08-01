@@ -78,6 +78,23 @@ def build_parser() -> argparse.ArgumentParser:
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
+    gui_parser = subparsers.add_parser(
+        "gui",
+        help="Launch the desktop graphical interface",
+    )
+    gui_parser.add_argument(
+        "input",
+        nargs="?",
+        type=Path,
+        default=None,
+        help="Optional audio or media file to preselect",
+    )
+    gui_parser.add_argument(
+        "--output-dir",
+        type=Path,
+        default=Path("output"),
+    )
+
     bank_parser = subparsers.add_parser(
         "bank-build",
         help="Build the reusable sine-grain resource pack",
@@ -211,6 +228,20 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     try:
+        if args.command == "gui":
+            try:
+                from .gui import launch_gui
+            except ImportError as exc:
+                raise RuntimeError(
+                    "Tkinter is required for the GUI. Install the Tk package "
+                    "for your Python distribution."
+                ) from exc
+            launch_gui(
+                initial_input=args.input,
+                output_dir=args.output_dir,
+            )
+            return 0
+
         config = _audio_config(args)
         if args.command == "bank-build":
             namespace = _profile_namespace(args.namespace, args.device_profile)

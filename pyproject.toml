@@ -17,6 +17,7 @@ dependencies = [
 
 [project.scripts]
 wav2mc = "wav2mc.cli:main"
+wav2mc-gui = "wav2mc.gui:main"
 
 [tool.setuptools]
 package-dir = {"" = "src"}
