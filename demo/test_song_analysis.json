@@ -1,0 +1,44 @@
+{
+  "source": "/mnt/data/wav2mc-basic/test_tone.wav",
+  "song_namespace": "test_song",
+  "input_duration_seconds": 4.0,
+  "output_duration_seconds": 4.0,
+  "frame_count": 79,
+  "tick_rate": 20,
+  "quality": "low",
+  "safe_scale": 1.0,
+  "preview_peak": 0.8116545081138611,
+  "average_components_per_frame": 3.0,
+  "maximum_components_per_frame": 3,
+  "estimated_playsound_commands_per_second": 60.0,
+  "audio_config": {
+    "sample_rate": 48000,
+    "grain_ms": 100.0,
+    "hop_ms": 50.0,
+    "min_frequency": 400,
+    "max_frequency": 900,
+    "frequency_step": 20,
+    "phase_count": 4
+  },
+  "required_resource_pack": {
+    "namespace": "wav2mc",
+    "sample_rate": 48000,
+    "grain_ms": 100.0,
+    "hop_ms": 50.0,
+    "min_frequency": 400,
+    "max_frequency": 900,
+    "frequency_step": 20,
+    "phase_count": 4,
+    "grain_level": 1.0
+  },
+  "data_pack": {
+    "pack_format": 81,
+    "layout": "modern",
+    "category": "record"
+  },
+  "outputs": {
+    "data_pack": "test_song_datapack.zip",
+    "preview": "test_song_preview.wav",
+    "report": "test_song_analysis.json"
+  }
+}

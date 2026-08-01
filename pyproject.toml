@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "wav2mc"
+version = "0.1.0"
+description = "Convert WAV/audio files into a Minecraft Java data pack that plays through a reusable sine-grain resource pack."
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+authors = [{name = "wav2mc contributors"}]
+dependencies = [
+  "numpy>=1.26",
+  "soundfile>=0.12"
+]
+
+[project.scripts]
+wav2mc = "wav2mc.cli:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
