@@ -7,6 +7,7 @@ import numpy as np
 from .analysis import AudioFrame
 from .audio import sqrt_hann
 from .config import AudioConfig
+from .grains import residual_grain
 
 
 def synthesize_preview(frames: list[AudioFrame], config: AudioConfig) -> np.ndarray:
@@ -21,6 +22,24 @@ def synthesize_preview(frames: list[AudioFrame], config: AudioConfig) -> np.ndar
         values = window * np.cos(2.0 * np.pi * frequency * sample_positions + phase)
         return values.astype(np.float32)
 
+    @lru_cache(maxsize=256)
+    def residual(
+        kind: str,
+        band_index: int,
+        low_frequency: int,
+        high_frequency: int,
+        variant: int,
+    ) -> np.ndarray:
+        return residual_grain(
+            config.sample_rate,
+            n,
+            band_index,
+            low_frequency,
+            high_frequency,
+            variant,
+            kind,
+        )
+
     output_size = max(n, (max(0, len(frames) - 1) * hop) + n)
     output = np.zeros(output_size, dtype=np.float32)
 
@@ -31,6 +50,14 @@ def synthesize_preview(frames: list[AudioFrame], config: AudioConfig) -> np.ndar
             output[start:end] += component.amplitude * grain(
                 component.frequency,
                 component.phase_index,
+            )
+        for component in frame.residual_components:
+            output[start:end] += component.amplitude * residual(
+                component.kind,
+                component.band_index,
+                component.low_frequency,
+                component.high_frequency,
+                component.variant,
             )
 
     return output

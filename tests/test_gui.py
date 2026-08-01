@@ -33,7 +33,7 @@ def test_gui_mode_summary_reports_quantized_high_frequency() -> None:
 
     assert "16000 Hz" in summary
     assert "最高频点 15840 Hz" in summary
-    assert "每帧最多 24 个分量" in summary
+    assert "最多 24 个正弦 + 6 个噪声 + 6 个瞬态" in summary
 
 
 @pytest.mark.parametrize(

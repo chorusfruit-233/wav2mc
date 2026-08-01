@@ -107,7 +107,10 @@ def test_convert_accepts_non_wav_input(tmp_path: Path) -> None:
     assert (output_dir / "encoded_input_preview.wav").is_file()
     report_path = output_dir / "encoded_input_analysis.json"
     assert report_path.is_file()
-    assert json.loads(report_path.read_text())["input_audio_stream"] == 0
+    report = json.loads(report_path.read_text())
+    assert report["input_audio_stream"] == 0
+    assert report["component_model"]["hybrid_residual_enabled"] is True
+    assert set(report["layer_scales"]) == {"tone", "residual"}
 
 
 def test_ffmpeg_probes_content_without_known_extension(tmp_path: Path) -> None:

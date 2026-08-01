@@ -10,6 +10,9 @@ class QualityProfile:
     band_limits: tuple[tuple[int, int, int], ...]
     relative_floor_db: float
     masking_offset_db: float = 10.0
+    max_noise_components: int = 0
+    max_transient_components: int = 0
+    residual_floor_db: float = -40.0
 
 
 QUALITY_PROFILES: dict[str, QualityProfile] = {
@@ -19,6 +22,9 @@ QUALITY_PROFILES: dict[str, QualityProfile] = {
         band_limits=((80, 500, 2), (500, 2000, 3), (2000, 4000, 3)),
         relative_floor_db=-34.0,
         masking_offset_db=7.0,
+        max_noise_components=1,
+        max_transient_components=1,
+        residual_floor_db=-30.0,
     ),
     "voice": QualityProfile(
         name="voice",
@@ -26,6 +32,9 @@ QUALITY_PROFILES: dict[str, QualityProfile] = {
         band_limits=((80, 500, 3), (500, 2000, 4), (2000, 8001, 5)),
         relative_floor_db=-38.0,
         masking_offset_db=9.0,
+        max_noise_components=2,
+        max_transient_components=2,
+        residual_floor_db=-34.0,
     ),
     "normal": QualityProfile(
         name="normal",
@@ -38,6 +47,9 @@ QUALITY_PROFILES: dict[str, QualityProfile] = {
         ),
         relative_floor_db=-44.0,
         masking_offset_db=10.0,
+        max_noise_components=4,
+        max_transient_components=4,
+        residual_floor_db=-38.0,
     ),
     "high": QualityProfile(
         name="high",
@@ -50,6 +62,9 @@ QUALITY_PROFILES: dict[str, QualityProfile] = {
         ),
         relative_floor_db=-48.0,
         masking_offset_db=14.0,
+        max_noise_components=6,
+        max_transient_components=6,
+        residual_floor_db=-42.0,
     ),
     "experimental": QualityProfile(
         name="experimental",
@@ -62,6 +77,9 @@ QUALITY_PROFILES: dict[str, QualityProfile] = {
         ),
         relative_floor_db=-52.0,
         masking_offset_db=16.0,
+        max_noise_components=8,
+        max_transient_components=8,
+        residual_floor_db=-46.0,
     ),
 }
 
@@ -75,6 +93,26 @@ ADAPTIVE_FREQUENCY_BANDS: tuple[tuple[int, int, int], ...] = (
 )
 
 
+RESIDUAL_FREQUENCY_BANDS: tuple[tuple[int, int], ...] = (
+    (20, 80),
+    (80, 160),
+    (160, 315),
+    (315, 500),
+    (500, 800),
+    (800, 1250),
+    (1250, 2000),
+    (2000, 3150),
+    (3150, 5000),
+    (5000, 6300),
+    (6300, 8000),
+    (8000, 10000),
+    (10000, 12500),
+    (12500, 15000),
+    (15000, 17500),
+    (17500, 20001),
+)
+
+
 @dataclass(frozen=True)
 class AudioConfig:
     sample_rate: int = 48_000
@@ -85,6 +123,8 @@ class AudioConfig:
     frequency_step: int = 20
     phase_count: int = 16
     adaptive_frequency_grid: bool = True
+    hybrid_residual: bool = True
+    residual_variant_count: int = 4
 
     @property
     def window_size(self) -> int:
@@ -134,6 +174,18 @@ class AudioConfig:
             for low, high, step in self.frequency_bands
             for frequency in range(low, high + 1, step)
         )
+
+    @property
+    def residual_bands(self) -> tuple[tuple[int, int, int], ...]:
+        if not self.hybrid_residual:
+            return ()
+        bands = []
+        for index, (low, high) in enumerate(RESIDUAL_FREQUENCY_BANDS):
+            clipped_low = max(low, self.min_frequency)
+            clipped_high = min(high, self.max_frequency + 1)
+            if clipped_low < clipped_high:
+                bands.append((index, clipped_low, clipped_high))
+        return tuple(bands)
 
 
 @dataclass(frozen=True)
@@ -251,6 +303,16 @@ def audio_config_metadata(config: AudioConfig) -> dict[str, object]:
         ],
         "frequency_count": len(config.frequencies),
         "phase_count": config.phase_count,
+        "hybrid_residual": config.hybrid_residual,
+        "residual_variant_count": config.residual_variant_count,
+        "residual_bands": [
+            {
+                "band_index": index,
+                "min_frequency": low,
+                "max_frequency": high - 1,
+            }
+            for index, low, high in config.residual_bands
+        ],
     }
 
 

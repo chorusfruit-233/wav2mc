@@ -5,6 +5,7 @@ from pathlib import Path
 from .analysis import AudioFrame
 from .bank import sound_event_name
 from .config import DEFAULT_MINECRAFT_VERSION, LoudnessCalibration
+from .grains import residual_event_name
 from .loudness import minecraft_command_volume
 from .utils import pack_metadata, temporary_directory, write_json, zip_directory
 
@@ -132,6 +133,22 @@ def build_data_pack(
                     f"{bank_namespace}:{event} {category} @s ~ ~ ~ "
                     f"{volume:.6f} 1.0 0.0"
                 )
+            for component in frame.residual_components:
+                event = residual_event_name(
+                    component.kind,
+                    component.band_index,
+                    component.variant,
+                )
+                volume = minecraft_command_volume(
+                    component.amplitude,
+                    bank_grain_level,
+                    calibration,
+                )
+                lines.append(
+                    "execute as @a[tag=wav2mc_listener] at @s run playsound "
+                    f"{bank_namespace}:{event} {category} @s ~ ~ ~ "
+                    f"{volume:.6f} 1.0 0.0"
+                )
             if not lines:
                 lines = ["# silent frame"]
             _write_text(frame_root / f"{frame.index:06d}.mcfunction", "\n".join(lines))
@@ -210,7 +227,7 @@ def build_data_pack(
             (
                 f"Run /function {namespace}:start as a player to begin.\n"
                 f"Run /function {namespace}:stop to stop.\n"
-                "Install and enable the matching wav2mc sine-bank resource pack first."
+                "Install and enable the matching wav2mc hybrid resource pack first."
             ),
         )
         zip_directory(root, output)

@@ -29,6 +29,16 @@ def test_explicit_frequency_step_selects_uniform_grid() -> None:
     assert uniform.frequencies[:4] == (20, 60, 100, 140)
 
 
+def test_hybrid_residual_can_be_disabled_for_legacy_banks() -> None:
+    parser = build_parser()
+    config = _audio_config(
+        parser.parse_args(["bank-build", "--no-hybrid-residual"])
+    )
+
+    assert config.hybrid_residual is False
+    assert config.residual_bands == ()
+
+
 def test_quality_profiles_enforce_fixed_band_budgets() -> None:
     config = AudioConfig(min_frequency=60, max_frequency=12000)
     quality = QUALITY_PROFILES["normal"]
@@ -53,3 +63,7 @@ def test_recommended_quality_profile_limits() -> None:
     assert QUALITY_PROFILES["normal"].max_components == 20
     assert QUALITY_PROFILES["high"].max_components == 24
     assert QUALITY_PROFILES["experimental"].max_components == 32
+    assert QUALITY_PROFILES["voice"].max_noise_components == 2
+    assert QUALITY_PROFILES["normal"].max_noise_components == 4
+    assert QUALITY_PROFILES["high"].max_transient_components == 6
+    assert QUALITY_PROFILES["experimental"].max_transient_components == 8

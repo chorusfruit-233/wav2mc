@@ -34,6 +34,13 @@ def _add_audio_config(parser: argparse.ArgumentParser) -> None:
     )
     parser.add_argument("--frequency-step", type=int, default=None)
     parser.add_argument("--phases", type=int, default=16)
+    parser.add_argument(
+        "--hybrid-residual",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Preserve generic transients and stochastic residual bands",
+    )
+    parser.add_argument("--residual-variants", type=int, default=4)
 
 
 def _audio_config(args: argparse.Namespace) -> AudioConfig:
@@ -49,11 +56,19 @@ def _audio_config(args: argparse.Namespace) -> AudioConfig:
         frequency_step=args.frequency_step or 20,
         phase_count=args.phases,
         adaptive_frequency_grid=adaptive_frequency_grid,
+        hybrid_residual=args.hybrid_residual,
+        residual_variant_count=args.residual_variants,
     )
     if config.hop_size * 2 != config.window_size:
         raise ValueError("The base implementation requires grain-ms = 2 * hop-ms")
-    if config.frequency_step <= 0 or config.phase_count <= 0:
-        raise ValueError("frequency-step and phases must be positive")
+    if (
+        config.frequency_step <= 0
+        or config.phase_count <= 0
+        or config.residual_variant_count <= 0
+    ):
+        raise ValueError(
+            "frequency-step, phases, and residual-variants must be positive"
+        )
     if config.min_frequency <= 0 or config.max_frequency < config.min_frequency:
         raise ValueError("Invalid frequency range")
     profile_name = getattr(args, "device_profile", None)

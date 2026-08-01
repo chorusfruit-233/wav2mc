@@ -116,7 +116,9 @@ def mode_summary(mode: str) -> str:
         range_text += f"（最高频点 {actual_max} Hz）"
     return (
         f"{range_text}  |  {len(config.frequencies)} 个频点  |  "
-        f"{config.phase_count} 相位  |  每帧最多 {quality.max_components} 个分量"
+        f"{config.phase_count} 相位  |  最多 {quality.max_components} 个正弦 + "
+        f"{quality.max_noise_components} 个噪声 + "
+        f"{quality.max_transient_components} 个瞬态"
     )
 
 

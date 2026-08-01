@@ -14,6 +14,7 @@ from .config import (
     audio_config_metadata,
     device_audio_config,
 )
+from .grains import RESIDUAL_KINDS, residual_event_name, residual_grain
 from .utils import (
     pack_metadata,
     safe_namespace,
@@ -48,7 +49,7 @@ def build_resource_pack(
             {
                 "pack": pack_metadata(
                     pack_format,
-                    "wav2mc reusable sine-grain bank"
+                    "wav2mc reusable hybrid audio bank"
                     + (f" ({device_profile})" if device_profile else ""),
                 )
             },
@@ -96,6 +97,49 @@ def build_resource_pack(
                     ]
                 }
 
+        for band_index, low, high in config.residual_bands:
+            for kind in RESIDUAL_KINDS:
+                band_root = (
+                    root
+                    / "assets"
+                    / namespace
+                    / "sounds"
+                    / kind
+                    / f"b{band_index:02d}"
+                )
+                band_root.mkdir(parents=True, exist_ok=True)
+                for variant in range(config.residual_variant_count):
+                    audio = grain_level * residual_grain(
+                        config.sample_rate,
+                        config.window_size,
+                        band_index,
+                        low,
+                        high,
+                        variant,
+                        kind,
+                    )
+                    file_path = band_root / f"v{variant:02d}.ogg"
+                    sf.write(
+                        file_path,
+                        audio.astype(np.float32),
+                        config.sample_rate,
+                        format="OGG",
+                        subtype="VORBIS",
+                    )
+
+                    event = residual_event_name(kind, band_index, variant)
+                    sounds[event] = {
+                        "sounds": [
+                            {
+                                "name": (
+                                    f"{namespace}:{kind}/b{band_index:02d}/"
+                                    f"v{variant:02d}"
+                                ),
+                                "stream": False,
+                            }
+                        ]
+                    }
+
         write_json(root / "assets" / namespace / "sounds.json", sounds)
         zip_directory(root, output)
 
@@ -137,7 +181,17 @@ def build_device_pack_set(
             "namespace": namespace,
             "quality": profile.quality_name,
             "audio_config": audio_config_metadata(config),
-            "sound_count": len(config.frequencies) * config.phase_count,
+            "sound_count": (
+                len(config.frequencies) * config.phase_count
+                + len(config.residual_bands)
+                * config.residual_variant_count
+                * len(RESIDUAL_KINDS)
+            ),
+            "residual_sound_count": (
+                len(config.residual_bands)
+                * config.residual_variant_count
+                * len(RESIDUAL_KINDS)
+            ),
         }
 
     manifest = output_dir / "wav2mc-device-packs.json"

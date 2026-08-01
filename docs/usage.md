@@ -1,6 +1,6 @@
 # wav2mc 详细使用指南
 
-wav2mc 把音频分析为每 tick 播放的正弦颗粒，生成 Minecraft Java 数据包，并配合预先生成的资源包播放。完整工作流程是：
+wav2mc 把音频分析为每 tick 播放的正弦、带限噪声和瞬态颗粒，生成 Minecraft Java 数据包，并配合预先生成的资源包播放。完整工作流程是：
 
 1. 为目标设备生成一次资源包。
 2. 使用相同参数转换每个音频。
@@ -96,12 +96,12 @@ output/device_banks/wav2mc_experimental_sine_bank.zip
 output/device_banks/wav2mc-device-packs.json
 ```
 
-| 模式 | 频率范围 | 相位数 | 每帧最多分量 | 用途 |
-| --- | --- | ---: | ---: | --- |
-| `voice` | 80–8000 Hz | 8 | 12 | 语音、较低客户端负载 |
-| `normal` | 60–12000 Hz | 12 | 20 | 普通音乐，推荐默认选择 |
-| `high` | 40–16000 Hz | 16 | 24 | 更完整的音乐细节 |
-| `experimental` | 20–20000 Hz | 16 | 32 | 最大频宽和命令负载 |
+| 模式 | 频率范围 | 相位 | 正弦 | 噪声 | 瞬态 |
+| --- | --- | ---: | ---: | ---: | ---: |
+| `voice` | 80–8000 Hz | 8 | 12 | 2 | 2 |
+| `normal` | 60–12000 Hz | 12 | 20 | 4 | 4 |
+| `high` | 40–16000 Hz | 16 | 24 | 6 | 6 |
+| `experimental` | 20–20000 Hz | 16 | 32 | 8 | 8 |
 
 可以只生成需要的档位：
 
@@ -110,6 +110,8 @@ wav2mc bank-build-set --profiles voice normal
 ```
 
 为兼容旧命令仍保留 `low`，但默认资源包集不再生成它。
+
+当前 ZIP 文件名为兼容已有脚本仍包含 `_sine_bank`，但包内已经同时包含正弦、噪声和瞬态事件。旧资源包必须重新生成后才能播放新转换结果。
 
 ### 2. 用同一档位转换音频
 
@@ -209,14 +211,14 @@ wav2mc convert input.wav \
   --bank-grain-level 1.0
 ```
 
-必须匹配的参数包括 `sample-rate`、`grain-ms`、`hop-ms`、频率范围、网格类型、频率步长（均匀网格）、相位数、颗粒音量和 namespace。不匹配时通常会出现缺失声音事件、音量错误或频率缺口。
+必须匹配的参数包括 `sample-rate`、`grain-ms`、`hop-ms`、频率范围、网格类型、频率步长（均匀网格）、相位数、混合残差开关、残差变体数、颗粒音量和 namespace。不匹配时通常会出现缺失声音事件、音量错误或频率缺口。
 
 ## 转换参数
 
 ### 质量和性能
 
 - `--mode voice|normal|high|experimental`：同时匹配资源包频率、相位、质量和 namespace，日常使用优先选择。
-- `--quality voice|normal|high|experimental`：只改变选峰预算，分别限制每帧最多 12、20、24、32 个分量；不会自动切换资源包。
+- `--quality voice|normal|high|experimental`：改变正弦、噪声和瞬态预算；不会自动切换资源包。
 - `--gain`：转换增益，必须大于 0。输出峰值仍会受安全缩放限制。
 - `--category`：Minecraft 声音分类，默认 `record`。
 
@@ -230,6 +232,19 @@ wav2mc convert input.wav \
 | 8000–12000 Hz | 3 |
 
 各频段只在自己的预算内选取峰值。空余名额不会跨频段转移，因此高频主要补充明亮度，不会抢走人声和旋律分量。`voice`、`high`、`experimental` 也使用按各自总预算扩展的固定分频限制；精确数值会写入 `*_analysis.json` 的 `quality_profile.band_budgets`。
+
+### 通用混合残差
+
+混合残差默认开启，并且不依赖乐器分类：
+
+- 正弦层使用现有 100 ms 分析窗，保留旋律、人声元音和持续音。
+- 噪声层通过频谱平坦度选择 16 个感知频带中的随机残差，保留齿音、环境声、失真和镲片纹理。
+- 瞬态层使用 25 ms 窗、10 ms 帧移和频谱通量，保留所有快速起音、点击、辅音和打击声。
+
+正弦与残差采用独立峰值标定，瞬态峰值不会触发整首音乐同比降音量。`normal/high/experimental` 每帧额外最多使用 4/6/8 个噪声和 4/6/8 个瞬态组件；瞬态只在检测到起音时出现。
+
+- `--no-hybrid-residual`：关闭通用残差，用于配合升级前的纯正弦资源包。
+- `--residual-variants`：每个频带的确定性噪声变体数，默认 4；资源包和转换命令必须相同。
 
 ### 频率与时间分辨率
 
@@ -292,6 +307,8 @@ wav2mc convert input.wav \
 - `required_resource_pack`：实际需要的 namespace、频率银行、相位数和颗粒音量。
 - `audio_config.frequency_grid`、`frequency_bands` 和 `frequency_count`：实际网格与资源数量。
 - `quality_profile.band_budgets`：每个频段的硬分量预算。
+- `component_model`：三层的平均与最大组件数量。
+- `layer_scales`：正弦层和残差层各自的安全缩放。
 - `preview_peak`：本地预览的峰值。
 - `average_components_per_frame` 和 `estimated_playsound_commands_per_second`：客户端负载指标。
 - `loudness_calibration.maximum_predicted_amplitude_error`：命令音量保留 6 位小数后的模型误差。
@@ -314,7 +331,7 @@ wav2mc convert input.wav \
 
 ### 预览就有明显失真
 
-先尝试 `--mode high`，或在资源允许时使用 `--mode experimental`。如某些弱频率被掩蔽，提高 `--masking-offset-db` 或临时关闭掩蔽做对照。对人声、鼓点和噪声，稀疏正弦重建仍会有明显声码器感。
+先确认已重新生成混合资源包，再尝试 `--mode high`，或在资源允许时使用 `--mode experimental`。如某些弱频率被掩蔽，提高 `--masking-offset-db` 或临时关闭掩蔽做对照。分析报告中 `component_model` 的噪声和瞬态数量持续为零时，确认没有使用 `--no-hybrid-residual`。
 
 ### 本地预览正常，游戏内音量不对
 
