@@ -34,6 +34,22 @@ wav2mc --help
 
 每次打开新终端后都需要重新激活 `.venv`。不安装命令行入口时，也可在仓库根目录使用 `python run.py <command>`。
 
+## 输入格式
+
+`wav2mc convert` 不依赖文件扩展名判断格式，而是交给 FFmpeg 探测和解码。常见输入包括：
+
+- 无损/未压缩：WAV、FLAC、AIFF、ALAC。
+- 有损：MP3、AAC、M4A、OGG/Vorbis、Opus、WMA。
+- 媒体容器：含音轨的 MP4、MKV、WebM 等。
+
+如容器包含多条音轨，默认选择第一条（索引 0）；可用 `--audio-stream 1` 选择第二条。视频、字幕和数据流会被忽略。输入必须是已存在的本地文件，当前不接受 URL 或标准输入。可用以下命令检查本机 FFmpeg 实际包含的解码器：
+
+```bash
+ffmpeg -decoders
+```
+
+文件无音轨、损坏或缺少对应解码器时，CLI 会返回 FFmpeg 的具体失败原因。
+
 ## 推荐快速流程
 
 ### 1. 生成设备档位资源包
@@ -74,7 +90,7 @@ wav2mc convert input.wav \
 
 `--device-profile normal` 会同时选择 4000 Hz 上限、20 Hz 步长、8 相位、`normal` 质量和 `wav2mc_normal` namespace。不要用 `low` 资源包播放 `normal` 或 `high` 转换结果。
 
-FFmpeg 支持的 MP3、FLAC、M4A 等格式也可作为输入。转换器会解码、单声道化、重采样并带通滤波。
+转换器会通过 FFmpeg 解码第一条音轨，然后单声道化、重采样并带通滤波。
 
 ### 3. 检查输出
 

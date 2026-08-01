@@ -38,6 +38,7 @@ def convert_audio(
     loudness_calibration: LoudnessCalibration | None = None,
     psychoacoustic_masking: bool = True,
     device_profile: str | None = None,
+    audio_stream: int = 0,
 ) -> dict[str, Path]:
     calibration = loudness_calibration or LoudnessCalibration()
     calibration.validate()
@@ -67,6 +68,7 @@ def convert_audio(
             sample_rate=config.sample_rate,
             low_frequency=max(20, config.min_frequency // 2),
             high_frequency=min(config.max_frequency, config.sample_rate // 2 - 100),
+            audio_stream=audio_stream,
         )
         audio = load_mono(decoded, config.sample_rate)
         audio = peak_normalize(audio, target_peak=0.92)
@@ -138,6 +140,7 @@ def convert_audio(
     report = {
         "minecraft_version": DEFAULT_MINECRAFT_VERSION,
         "source": report_source,
+        "input_audio_stream": audio_stream,
         "song_namespace": namespace,
         "input_duration_seconds": round(audio.size / config.sample_rate, 6),
         "output_duration_seconds": round(preview.size / config.sample_rate, 6),

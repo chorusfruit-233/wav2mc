@@ -39,6 +39,10 @@
 - FFmpeg，且 `ffmpeg` 命令可在 PATH 中使用
 - Python 包：NumPy、SoundFile
 
+## 输入格式
+
+`convert` 接受本机 FFmpeg 能够解码的任意音频或媒体文件，例如 WAV、MP3、FLAC、M4A/AAC、OGG/Vorbis、Opus、AIFF，以及含音轨的 MP4/MKV。容器有多条音轨时可用 `--audio-stream` 选择，视频、字幕和数据流会被忽略。实际格式范围取决于已安装的 FFmpeg 构建。
+
 ## 安装
 
 Windows PowerShell：

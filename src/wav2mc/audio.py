@@ -22,8 +22,11 @@ def preprocess_audio(
     sample_rate: int,
     low_frequency: int,
     high_frequency: int,
+    audio_stream: int = 0,
 ) -> None:
     """Decode any FFmpeg-supported input into mono PCM WAV."""
+    if audio_stream < 0:
+        raise ValueError("audio_stream must not be negative")
     ffmpeg = ensure_command("ffmpeg")
     target.parent.mkdir(parents=True, exist_ok=True)
     audio_filter = f"highpass=f={low_frequency},lowpass=f={high_frequency}"
@@ -32,10 +35,15 @@ def preprocess_audio(
         "-hide_banner",
         "-loglevel",
         "error",
+        "-nostdin",
         "-y",
         "-i",
         str(source),
+        "-map",
+        f"0:a:{audio_stream}",
         "-vn",
+        "-sn",
+        "-dn",
         "-ac",
         "1",
         "-ar",
@@ -47,9 +55,18 @@ def preprocess_audio(
         str(target),
     ]
     try:
-        subprocess.run(command, check=True)
+        subprocess.run(
+            command,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
     except subprocess.CalledProcessError as exc:
-        raise RuntimeError(f"FFmpeg failed while reading {source}") from exc
+        detail = (exc.stderr or "").strip().splitlines()
+        reason = detail[-1] if detail else "unknown decoder error"
+        raise RuntimeError(
+            f"FFmpeg could not decode an audio stream from {source}: {reason}"
+        ) from exc
 
 
 def load_mono(path: Path, expected_sample_rate: int) -> np.ndarray:

@@ -116,9 +116,19 @@ def build_parser() -> argparse.ArgumentParser:
 
     convert_parser = subparsers.add_parser(
         "convert",
-        help="Convert an audio file into a data pack and preview WAV",
+        help="Convert any FFmpeg-supported audio file",
     )
-    convert_parser.add_argument("input", type=Path)
+    convert_parser.add_argument(
+        "input",
+        type=Path,
+        help="Local audio or media file decoded by FFmpeg",
+    )
+    convert_parser.add_argument(
+        "--audio-stream",
+        type=int,
+        default=0,
+        help="Zero-based audio stream index for media containers",
+    )
     convert_parser.add_argument("--name", default=None)
     convert_parser.add_argument("--output-dir", type=Path, default=Path("output"))
     convert_parser.add_argument(
@@ -255,6 +265,7 @@ def main(argv: list[str] | None = None) -> int:
                 loudness_calibration=calibration,
                 psychoacoustic_masking=args.psychoacoustic_masking,
                 device_profile=args.device_profile,
+                audio_stream=args.audio_stream,
             )
             for label, path in outputs.items():
                 print(f"{label}: {path.resolve()}")
