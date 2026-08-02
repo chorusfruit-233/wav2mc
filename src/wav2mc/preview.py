@@ -8,6 +8,12 @@ from .analysis import AudioFrame
 from .audio import sqrt_hann
 from .config import AudioConfig
 from .grains import residual_grain
+from .utils import (
+    CancelCheck,
+    ProgressCallback,
+    check_cancelled,
+    emit_progress,
+)
 
 
 def _is_stereo(frames: list[AudioFrame]) -> bool:
@@ -38,6 +44,8 @@ def synthesize_preview(
     frames: list[AudioFrame],
     config: AudioConfig,
     stereo: bool | None = None,
+    progress_callback: ProgressCallback | None = None,
+    cancel_check: CancelCheck | None = None,
 ) -> np.ndarray:
     n = config.window_size
     hop = config.hop_size
@@ -56,7 +64,16 @@ def synthesize_preview(
     output_shape = (output_size, 2) if stereo else output_size
     output = np.zeros(output_shape, dtype=np.float32)
 
-    for frame in frames:
+    emit_progress(progress_callback, "reconstruct", 0.0, "Reconstructing preview")
+    for position, frame in enumerate(frames):
+        if position % 32 == 0:
+            check_cancelled(cancel_check)
+            emit_progress(
+                progress_callback,
+                "reconstruct",
+                position / max(1, len(frames)),
+                "Reconstructing preview",
+            )
         start = frame.index * hop
         end = start + n
         for component in frame.components:
@@ -72,6 +89,8 @@ def synthesize_preview(
             stereo=stereo,
         )
 
+    check_cancelled(cancel_check)
+    emit_progress(progress_callback, "reconstruct", 1.0, "Preview reconstructed")
     return output
 
 

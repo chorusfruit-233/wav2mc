@@ -7,6 +7,13 @@ import numpy as np
 from .audio import sqrt_hann
 from .config import AudioConfig, QualityProfile
 from .grains import residual_grain_reference_rms
+from .utils import (
+    CancelCheck,
+    ProgressCallback,
+    check_cancelled,
+    emit_progress,
+    scaled_progress,
+)
 
 
 @dataclass(frozen=True)
@@ -178,6 +185,8 @@ def _transient_components_by_frame(
     config: AudioConfig,
     quality: QualityProfile,
     frame_count: int,
+    progress_callback: ProgressCallback | None = None,
+    cancel_check: CancelCheck | None = None,
 ) -> dict[int, tuple[ResidualComponent, ...]]:
     if (
         not config.hybrid_residual
@@ -221,6 +230,14 @@ def _transient_components_by_frame(
     previous_magnitude = np.zeros(frequencies.size, dtype=np.float64)
 
     for short_index in range(short_frame_count):
+        if short_index % 64 == 0:
+            check_cancelled(cancel_check)
+            emit_progress(
+                progress_callback,
+                "analyse",
+                short_index / max(1, short_frame_count),
+                "Detecting transients",
+            )
         start = short_index * short_hop
         chunk = audio[start : start + short_size]
         if chunk.size < short_size:
@@ -250,6 +267,7 @@ def _transient_components_by_frame(
         weighted_level = float(np.dot(current_levels, band_weights))
         novelty[short_index] = weighted_increase / max(weighted_level, 1e-12)
         previous_magnitude = magnitude
+    emit_progress(progress_callback, "analyse", 1.0, "Transients detected")
 
     usable_novelty = novelty[1:]
     median = float(np.median(usable_novelty))
@@ -480,6 +498,8 @@ def analyse_audio(
     tracking_radius_steps: int = 1,
     tracking_hysteresis: float = 0.10,
     psychoacoustic_masking: bool = True,
+    progress_callback: ProgressCallback | None = None,
+    cancel_check: CancelCheck | None = None,
 ) -> list[AudioFrame]:
     if continuity_bonus < 0.0:
         raise ValueError("continuity_bonus must not be negative")
@@ -510,6 +530,8 @@ def analyse_audio(
         config,
         quality,
         frame_count,
+        progress_callback=scaled_progress(progress_callback, 0.0, 0.35),
+        cancel_check=cancel_check,
     )
 
     frames: list[AudioFrame] = []
@@ -517,6 +539,14 @@ def analyse_audio(
     noise_tracks: dict[int, tuple[int, int]] = {}
 
     for frame_index in range(frame_count):
+        if frame_index % 32 == 0:
+            check_cancelled(cancel_check)
+            emit_progress(
+                progress_callback,
+                "analyse",
+                0.35 + 0.65 * frame_index / max(1, frame_count),
+                "Analysing spectral frames",
+            )
         start = frame_index * hop
         chunk = padded[start : start + n]
         spectrum = np.fft.rfft(chunk * window)
@@ -614,6 +644,7 @@ def analyse_audio(
             )
         )
 
+    emit_progress(progress_callback, "analyse", 1.0, "Analysis complete")
     return frames
 
 

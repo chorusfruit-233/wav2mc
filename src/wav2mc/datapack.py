@@ -7,7 +7,17 @@ from .bank import sound_event_name
 from .config import DEFAULT_MINECRAFT_VERSION, LoudnessCalibration
 from .grains import residual_event_name
 from .loudness import minecraft_command_volume
-from .utils import pack_metadata, temporary_directory, write_json, zip_directory
+from .utils import (
+    CancelCheck,
+    ProgressCallback,
+    check_cancelled,
+    emit_progress,
+    pack_metadata,
+    scaled_progress,
+    temporary_directory,
+    write_json,
+    zip_directory,
+)
 
 
 STEREO_SOURCE_OFFSET = 0.75
@@ -43,10 +53,12 @@ def _create_dispatch_tree(
     namespace: str,
     frame_count: int,
     leaf_span: int = 16,
+    cancel_check: CancelCheck | None = None,
 ) -> None:
     dispatch_root = function_root / "dispatch"
 
     def build(low: int, high: int, name: str) -> None:
+        check_cancelled(cancel_check)
         path = dispatch_root / f"{name}.mcfunction"
         if high - low + 1 <= leaf_span:
             lines = [
@@ -92,6 +104,8 @@ def build_data_pack(
     category: str = "record",
     bank_grain_level: float = 1.0,
     loudness_calibration: LoudnessCalibration | None = None,
+    progress_callback: ProgressCallback | None = None,
+    cancel_check: CancelCheck | None = None,
 ) -> None:
     calibration = loudness_calibration or LoudnessCalibration()
     calibration.validate()
@@ -103,7 +117,15 @@ def build_data_pack(
         for component in frame.all_components
     )
 
-    with temporary_directory("wav2mc-datapack-") as root:
+    output.parent.mkdir(parents=True, exist_ok=True)
+    with temporary_directory(
+        ".wav2mc-datapack-",
+        directory=output.parent,
+    ) as staging:
+        root = staging / "content"
+        staged_output = staging / output.name
+        emit_progress(progress_callback, "datapack", 0.0, "Writing data pack")
+        check_cancelled(cancel_check)
         write_json(
             root / "pack.mcmeta",
             {
@@ -139,7 +161,15 @@ def build_data_pack(
         frame_root = function_root / "frame"
         frame_root.mkdir(parents=True, exist_ok=True)
 
-        for frame in frames:
+        for position, frame in enumerate(frames):
+            if position % 32 == 0:
+                check_cancelled(cancel_check)
+                emit_progress(
+                    progress_callback,
+                    "datapack",
+                    0.72 * position / max(1, frame_count),
+                    "Writing frame functions",
+                )
             lines = []
             for component in frame.components:
                 event = sound_event_name(component.frequency, component.phase_index)
@@ -177,7 +207,18 @@ def build_data_pack(
                 lines = ["# silent frame"]
             _write_text(frame_root / f"{frame.index:06d}.mcfunction", "\n".join(lines))
 
-        _create_dispatch_tree(function_root, namespace, frame_count)
+        _create_dispatch_tree(
+            function_root,
+            namespace,
+            frame_count,
+            cancel_check=cancel_check,
+        )
+        emit_progress(
+            progress_callback,
+            "datapack",
+            0.82,
+            "Writing dispatch functions",
+        )
 
         _write_text(
             function_root / "load.mcfunction",
@@ -254,4 +295,18 @@ def build_data_pack(
                 "Install and enable the matching wav2mc hybrid resource pack first."
             ),
         )
-        zip_directory(root, output)
+        check_cancelled(cancel_check)
+        zip_directory(
+            root,
+            staged_output,
+            progress_callback=scaled_progress(
+                progress_callback,
+                0.84,
+                0.99,
+                "datapack",
+            ),
+            cancel_check=cancel_check,
+        )
+        check_cancelled(cancel_check)
+        staged_output.replace(output)
+        emit_progress(progress_callback, "datapack", 1.0, "Data pack complete")

@@ -107,7 +107,7 @@ def build_parser() -> argparse.ArgumentParser:
     gui_parser.add_argument(
         "--output-dir",
         type=Path,
-        default=Path("output"),
+        default=None,
     )
 
     bank_parser = subparsers.add_parser(
