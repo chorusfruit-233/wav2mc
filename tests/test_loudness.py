@@ -69,10 +69,10 @@ def test_data_pack_writes_calibrated_command_volume(tmp_path: Path) -> None:
 
     assert "0.707107 1.0 0.0" in command
     assert metadata["bank_grain_level"] == 0.5
-    assert metadata["minecraft_version"] == "26.2"
+    assert metadata["minecraft_version"] == "26.3"
     assert metadata["loudness_calibration"]["volume_exponent"] == 2.0
-    assert pack_metadata["pack"]["min_format"] == [107, 1]
-    assert pack_metadata["pack"]["max_format"] == [107, 1]
+    assert pack_metadata["pack"]["min_format"] == [121, 0]
+    assert pack_metadata["pack"]["max_format"] == [121, 0]
 
 
 def test_data_pack_positions_stereo_sources_relative_to_listener(

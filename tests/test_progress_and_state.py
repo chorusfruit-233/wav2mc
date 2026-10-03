@@ -132,7 +132,10 @@ def test_gui_settings_validate_and_save_atomically(tmp_path: Path) -> None:
     assert load_gui_settings(path) == GuiSettings()
 
 
-@pytest.mark.parametrize("mismatch", ["phase_count", "old_window", "missing_window"])
+@pytest.mark.parametrize("mismatch", [
+    "phase_count", "old_window", "missing_window",
+    "old_minecraft_version", "old_pack_format",
+])
 def test_pack_status_recognizes_valid_and_mismatched_metadata(
     tmp_path: Path, mismatch: str,
 ) -> None:
@@ -140,17 +143,18 @@ def test_pack_status_recognizes_valid_and_mismatched_metadata(
     config = device_audio_config(AudioConfig(), profile)
     target = tmp_path / "wav2mc_normal_sine_bank.zip"
     metadata = {
-        "minecraft_version": "26.2",
+        "minecraft_version": "26.3",
         "namespace": "wav2mc_normal",
         "device_profile": "normal",
         "grain_level": 1.0,
         **audio_config_metadata(config),
     }
+    resource_format = DEFAULT_RESOURCE_PACK_FORMAT
     with zipfile.ZipFile(target, "w") as archive:
         archive.writestr("wav2mc-bank.json", json.dumps(metadata))
         archive.writestr(
             "pack.mcmeta",
-            json.dumps({"pack": {"pack_format": DEFAULT_RESOURCE_PACK_FORMAT}}),
+            json.dumps({"pack": {"pack_format": resource_format}}),
         )
 
     assert inspect_device_pack(tmp_path, "normal").state == "valid"
@@ -159,13 +163,17 @@ def test_pack_status_recognizes_valid_and_mismatched_metadata(
         metadata["phase_count"] = 2
     elif mismatch == "old_window":
         metadata["tonal_window"] = "sqrt-hann"
-    else:
+    elif mismatch == "missing_window":
         del metadata["tonal_window"]
+    elif mismatch == "old_minecraft_version":
+        metadata["minecraft_version"] = "26.2"
+    else:
+        resource_format = 88.0
     with zipfile.ZipFile(target, "w") as archive:
         archive.writestr("wav2mc-bank.json", json.dumps(metadata))
         archive.writestr(
             "pack.mcmeta",
-            json.dumps({"pack": {"pack_format": DEFAULT_RESOURCE_PACK_FORMAT}}),
+            json.dumps({"pack": {"pack_format": resource_format}}),
         )
     assert inspect_device_pack(tmp_path, "normal").state == "mismatch"
     assert inspect_device_pack(tmp_path, "voice").state == "missing"

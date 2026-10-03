@@ -11,6 +11,7 @@ from .config import (
     DEFAULT_DEVICE_PACK_PROFILES,
     DEFAULT_DATA_PACK_FORMAT,
     DEFAULT_LAYOUT,
+    DEFAULT_MINECRAFT_VERSION,
     DEFAULT_RESOURCE_PACK_FORMAT,
     QUALITY_PROFILES,
     AudioConfig,
@@ -123,6 +124,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--pack-format",
         type=float,
         default=DEFAULT_RESOURCE_PACK_FORMAT,
+        help=(
+            f"Resource pack format (default: {DEFAULT_RESOURCE_PACK_FORMAT} "
+            f"for Minecraft Java {DEFAULT_MINECRAFT_VERSION})"
+        ),
     )
     bank_parser.add_argument("--namespace", default=None)
     bank_parser.add_argument("--grain-level", type=float, default=1.0)
@@ -154,6 +159,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--pack-format",
         type=float,
         default=DEFAULT_RESOURCE_PACK_FORMAT,
+        help=(
+            f"Resource pack format (default: {DEFAULT_RESOURCE_PACK_FORMAT} "
+            f"for Minecraft Java {DEFAULT_MINECRAFT_VERSION})"
+        ),
     )
     set_parser.add_argument("--namespace-prefix", default="wav2mc")
     set_parser.add_argument("--grain-level", type=float, default=1.0)
@@ -185,6 +194,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--data-pack-format",
         type=float,
         default=DEFAULT_DATA_PACK_FORMAT,
+        help=(
+            f"Data pack format (default: {DEFAULT_DATA_PACK_FORMAT} "
+            f"for Minecraft Java {DEFAULT_MINECRAFT_VERSION})"
+        ),
     )
     convert_parser.add_argument(
         "--layout",

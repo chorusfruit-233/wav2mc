@@ -37,8 +37,8 @@ def test_builds_device_tier_pack_set(tmp_path: Path) -> None:
 
     expected_profiles = {"voice", "normal", "high", "experimental"}
     assert set(outputs) == expected_profiles | {"manifest"}
-    assert manifest["minecraft_version"] == "26.2"
-    assert manifest["pack_format"] == 88.0
+    assert manifest["minecraft_version"] == "26.3"
+    assert manifest["pack_format"] == 97.1
     assert manifest["profiles"]["voice"]["sound_count"] == 18
     assert manifest["profiles"]["normal"]["sound_count"] == 18
     assert manifest["profiles"]["high"]["sound_count"] == 18
@@ -51,14 +51,14 @@ def test_builds_device_tier_pack_set(tmp_path: Path) -> None:
             metadata = json.loads(archive.read("wav2mc-bank.json"))
             pack_metadata = json.loads(archive.read("pack.mcmeta"))
         assert metadata["device_profile"] == profile_name
-        assert metadata["minecraft_version"] == "26.2"
+        assert metadata["minecraft_version"] == "26.3"
         assert metadata["namespace"] == f"wav2mc_{profile_name}"
         assert metadata["frequency_grid"] == "adaptive"
         assert metadata["hybrid_residual"] is True
         assert len(metadata["residual_bands"]) == 1
-        assert pack_metadata["pack"]["pack_format"] == 88.0
-        assert pack_metadata["pack"]["min_format"] == [88, 0]
-        assert pack_metadata["pack"]["max_format"] == [88, 0]
+        assert pack_metadata["pack"]["pack_format"] == 97.1
+        assert pack_metadata["pack"]["min_format"] == [97, 1]
+        assert pack_metadata["pack"]["max_format"] == [97, 1]
 
     assert manifest["profiles"]["voice"]["quality"] == "voice"
     assert manifest["profiles"]["experimental"]["quality"] == "experimental"

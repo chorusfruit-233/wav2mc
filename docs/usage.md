@@ -175,7 +175,7 @@ output/demo_song_analysis.json
 - `*_datapack.zip`：安装到世界的数据包。
 - `*_analysis.json`：记录质量、帧数、命令负载、校准值和所需资源包参数。
 
-## 安装到 Minecraft 26.2
+## 安装到 Minecraft 26.3
 
 1. 把选定档位的 `wav2mc_*_sine_bank.zip` 放入 Minecraft `resourcepacks` 目录并启用。
 2. 把 `demo_song_datapack.zip` 放入 `<world>/datapacks/`。
@@ -347,13 +347,15 @@ wav2mc convert input.wav \
 
 ## 版本与布局兼容
 
-默认目标为 Minecraft Java 26.2：
+默认目标为 Minecraft Java 26.3：
 
-- Resource Pack 格式 `88.0`
-- Data Pack 格式 `107.1`
+- Resource Pack 格式 `97.1`
+- Data Pack 格式 `121.0`
 - 数据包函数目录 `data/<namespace>/function`
 
-目标其他版本时，资源包使用 `--pack-format`，转换使用 `--data-pack-format`。旧版本如果要求 `functions` 复数目录，再为转换命令添加 `--layout legacy`。格式号必须查询目标 Minecraft 版本的官方发布说明，不要沿用 26.2 的默认值。
+目标其他版本时，资源包使用 `--pack-format`，转换使用 `--data-pack-format`。旧版本如果要求 `functions` 复数目录，再为转换命令添加 `--layout legacy`。格式号必须查询目标 Minecraft 版本的官方发布说明，不要沿用 26.3 的默认值。
+
+格式号依据 [Minecraft Java 26.3 官方发布说明](https://www.minecraft.net/en-us/article/minecraft-java-edition-26-3)。从 26.2 升级到 26.3 时，请重新生成资源包和数据包；GUI 会将旧目标版本或旧包格式显示为“参数不匹配”。仍需用于 26.2 时，显式指定资源包 `--pack-format 88.0` 和转换 `--data-pack-format 107.1`，目录继续使用 `modern`。
 
 ## 读取分析报告
 
