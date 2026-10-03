@@ -36,7 +36,8 @@ from .utils import (
     ProgressCallback,
     check_cancelled,
     emit_progress,
-    safe_namespace,
+    conversion_output_paths,
+    song_namespace,
     scaled_progress,
     temporary_directory,
     write_json,
@@ -279,15 +280,16 @@ def convert_audio(
         raise ValueError("bank_grain_level must be in (0, 1]")
 
     output_dir.mkdir(parents=True, exist_ok=True)
-    namespace = safe_namespace(song_name)
+    namespace = song_namespace(song_name)
     resolved_source = source.resolve()
     try:
         report_source = str(resolved_source.relative_to(Path.cwd().resolve()))
     except ValueError:
         report_source = str(resolved_source)
-    data_pack_path = output_dir / f"{namespace}_datapack.zip"
-    preview_path = output_dir / f"{namespace}_preview.wav"
-    report_path = output_dir / f"{namespace}_analysis.json"
+    output_paths = conversion_output_paths(output_dir, song_name)
+    data_pack_path = output_paths["data_pack"]
+    preview_path = output_paths["preview"]
+    report_path = output_paths["report"]
 
     check_cancelled(cancel_check)
     duration_seconds = None
@@ -501,6 +503,7 @@ def convert_audio(
             "source": report_source,
             "input_audio_stream": audio_stream,
             "song_namespace": namespace,
+            "song_name": song_name,
             "input_duration_seconds": round(
                 audio.shape[0] / config.sample_rate,
                 6,

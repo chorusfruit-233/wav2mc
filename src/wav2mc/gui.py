@@ -35,7 +35,10 @@ from .gui_state import (
     save_gui_settings,
 )
 from .pipeline import convert_audio
-from .utils import ProgressCallback, ProgressUpdate, TaskCancelled, safe_namespace
+from .utils import (
+    ProgressCallback, ProgressUpdate, TaskCancelled,
+    conversion_output_paths, safe_namespace,
+)
 
 
 _T = TypeVar("_T")
@@ -209,15 +212,6 @@ def mode_summary(mode: str) -> str:
         f"{quality.max_noise_components} 个噪声 + "
         f"{quality.max_transient_components} 个瞬态"
     )
-
-
-def conversion_output_paths(output_dir: Path, song_name: str) -> dict[str, Path]:
-    namespace = safe_namespace(song_name)
-    return {
-        "data_pack": output_dir / f"{namespace}_datapack.zip",
-        "preview": output_dir / f"{namespace}_preview.wav",
-        "report": output_dir / f"{namespace}_analysis.json",
-    }
 
 
 def result_function_command(report: Mapping[str, object]) -> str:

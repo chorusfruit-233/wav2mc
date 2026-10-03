@@ -62,13 +62,13 @@ def test_gui_mode_load_and_result_command() -> None:
     )
 
 
-def test_gui_conversion_output_paths_use_safe_namespace(tmp_path: Path) -> None:
+def test_gui_conversion_output_paths_preserve_song_name(tmp_path: Path) -> None:
     outputs = gui.conversion_output_paths(tmp_path, "My Song!")
 
     assert outputs == {
-        "data_pack": tmp_path / "my_song_datapack.zip",
-        "preview": tmp_path / "my_song_preview.wav",
-        "report": tmp_path / "my_song_analysis.json",
+        "data_pack": tmp_path / "My Song!_datapack.zip",
+        "preview": tmp_path / "My Song!_preview.wav",
+        "report": tmp_path / "My Song!_analysis.json",
     }
 
 

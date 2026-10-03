@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import shutil
@@ -69,6 +70,38 @@ def safe_namespace(value: str) -> str:
     cleaned = _NAMESPACE_RE.sub("_", value.lower().strip())
     cleaned = cleaned.strip("._-")
     return cleaned or "song"
+
+
+def song_namespace(value: str) -> str:
+    """Keep Unicode song names distinct using Minecraft-safe identifiers."""
+    namespace = safe_namespace(value)
+    if not value.isascii():
+        digest = hashlib.sha256(value.strip().encode("utf-8")).hexdigest()[:12]
+        return f"{namespace}_{digest}"
+    return namespace
+
+
+def safe_output_name(value: str) -> str:
+    """Preserve Unicode while removing unsafe filename characters."""
+    cleaned = re.sub(r'[<>:"/\\|?*\x00-\x1f\x7f]', "_", value.strip())
+    cleaned = cleaned.strip(" .") or "song"
+    if cleaned.split(".")[0].upper() in {
+        "CON", "PRN", "AUX", "NUL",
+        *(f"COM{i}" for i in range(1, 10)),
+        *(f"LPT{i}" for i in range(1, 10)),
+    }:
+        cleaned = f"_{cleaned}"
+    # Leave space for suffixes on filesystems with a 255-byte name limit.
+    return cleaned.encode("utf-8")[:180].decode("utf-8", errors="ignore").rstrip(" .")
+
+
+def conversion_output_paths(output_dir: Path, song_name: str) -> dict[str, Path]:
+    name = safe_output_name(song_name)
+    return {
+        "data_pack": output_dir / f"{name}_datapack.zip",
+        "preview": output_dir / f"{name}_preview.wav",
+        "report": output_dir / f"{name}_analysis.json",
+    }
 
 
 def ensure_command(name: str) -> str:

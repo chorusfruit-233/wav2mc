@@ -194,6 +194,8 @@ output/demo_song_analysis.json
 
 `demo_song` 来自 `--name`，会被转换为合法 namespace。`start` 会把执行者设为当前监听者；其他玩家再次执行会切换监听者。请确认游戏中 `Records/Jukebox` 声音分类未静音。
 
+歌曲名称支持中文。例如 `--name "中文歌曲"` 会输出 `中文歌曲_datapack.zip`、`中文歌曲_preview.wav` 和 `中文歌曲_analysis.json`；未指定 `--name` 时使用输入文件名（不含扩展名）。文件名保留大小写和空格，并替换路径分隔符及非法文件名字符。中文名称在包内会使用带稳定摘要后缀的合法 namespace，防止不同歌曲发生冲突。游戏内播放命令请使用 GUI 的“复制”按钮，或读取分析报告中的 `song_namespace`，不要直接将中文文件名填入 `/function`。
+
 ## 自定义资源包
 
 不使用设备模式时，可完全控制频率银行。默认自适应网格为：

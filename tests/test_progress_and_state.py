@@ -30,7 +30,7 @@ from wav2mc.gui_state import (
     save_gui_settings,
 )
 from wav2mc.pipeline import convert_audio
-from wav2mc.utils import TaskCancelled
+from wav2mc.utils import TaskCancelled, conversion_output_paths, safe_namespace
 
 
 def _small_config() -> AudioConfig:
@@ -179,7 +179,10 @@ def test_pack_status_recognizes_valid_and_mismatched_metadata(
     assert inspect_device_pack(tmp_path, "voice").state == "missing"
 
 
-def test_conversion_progress_is_monotonic_and_finishes_at_one(tmp_path: Path) -> None:
+@pytest.mark.parametrize("song_name", ["progress", "测试歌曲", "另一首歌曲"])
+def test_conversion_progress_is_monotonic_and_finishes_at_one(
+    tmp_path: Path, song_name: str,
+) -> None:
     source = tmp_path / "tone.wav"
     _write_tone(source)
     updates = []
@@ -187,7 +190,7 @@ def test_conversion_progress_is_monotonic_and_finishes_at_one(tmp_path: Path) ->
     outputs = convert_audio(
         source=source,
         output_dir=tmp_path / "output",
-        song_name="progress",
+        song_name=song_name,
         config=_small_config(),
         quality=QUALITY_PROFILES["low"],
         data_pack_format=DEFAULT_DATA_PACK_FORMAT,
@@ -207,6 +210,14 @@ def test_conversion_progress_is_monotonic_and_finishes_at_one(tmp_path: Path) ->
     }
     report = json.loads(outputs["report"].read_text(encoding="utf-8"))
     assert report["actual_playsound_command_count"] >= 0
+    assert outputs == conversion_output_paths(tmp_path / "output", song_name)
+    assert outputs["data_pack"].name == f"{song_name}_datapack.zip"
+    assert report["song_name"] == song_name
+    assert report["outputs"] == {key: path.name for key, path in outputs.items()}
+    namespace = report["song_namespace"]
+    assert namespace == safe_namespace(namespace)
+    with zipfile.ZipFile(outputs["data_pack"]) as archive:
+        assert f"data/{namespace}/function/start.mcfunction" in archive.namelist()
 
 
 def test_conversion_cancel_during_datapack_preserves_outputs(tmp_path: Path) -> None:
