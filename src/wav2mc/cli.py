@@ -216,6 +216,10 @@ def build_parser() -> argparse.ArgumentParser:
     )
     convert_parser.add_argument("--bank-grain-level", type=float, default=1.0)
     convert_parser.add_argument(
+        "--preview-resource-pack", type=Path,
+        help="Render preview from the exact OGG grains in a matching resource pack",
+    )
+    convert_parser.add_argument(
         "--device-profile",
         "--mode",
         dest="device_profile",
@@ -347,6 +351,7 @@ def main(argv: list[str] | None = None) -> int:
                 device_profile=args.device_profile,
                 audio_stream=args.audio_stream,
                 preserve_stereo=args.stereo,
+                preview_resource_pack=args.preview_resource_pack,
             )
             for label, path in outputs.items():
                 print(f"{label}: {path.resolve()}")

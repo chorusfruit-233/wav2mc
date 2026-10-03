@@ -12,7 +12,7 @@ license = {text = "MIT"}
 authors = [{name = "wav2mc contributors"}]
 dependencies = [
   "numpy>=1.26",
-  "soundfile>=0.12"
+  "soundfile>=0.13"
 ]
 
 [project.scripts]

@@ -39,10 +39,7 @@ def test_builds_device_tier_pack_set(tmp_path: Path) -> None:
     assert set(outputs) == expected_profiles | {"manifest"}
     assert manifest["minecraft_version"] == "26.3"
     assert manifest["pack_format"] == 97.1
-    assert manifest["profiles"]["voice"]["sound_count"] == 18
-    assert manifest["profiles"]["normal"]["sound_count"] == 18
-    assert manifest["profiles"]["high"]["sound_count"] == 18
-    assert manifest["profiles"]["experimental"]["sound_count"] == 18
+    assert all(manifest["profiles"][name]["sound_count"] == 228 for name in expected_profiles)
 
     for profile_name in expected_profiles:
         target = outputs[profile_name]
@@ -50,6 +47,9 @@ def test_builds_device_tier_pack_set(tmp_path: Path) -> None:
         with zipfile.ZipFile(target) as archive:
             metadata = json.loads(archive.read("wav2mc-bank.json"))
             pack_metadata = json.loads(archive.read("pack.mcmeta"))
+            sounds = json.loads(archive.read(f"assets/wav2mc_{profile_name}/sounds.json"))
+            assert len(sounds) == manifest["profiles"][profile_name]["sound_count"]
+            assert sum(name.endswith(".ogg") for name in archive.namelist()) == len(sounds)
         assert metadata["device_profile"] == profile_name
         assert metadata["minecraft_version"] == "26.3"
         assert metadata["namespace"] == f"wav2mc_{profile_name}"
@@ -62,4 +62,4 @@ def test_builds_device_tier_pack_set(tmp_path: Path) -> None:
 
     assert manifest["profiles"]["voice"]["quality"] == "voice"
     assert manifest["profiles"]["experimental"]["quality"] == "experimental"
-    assert manifest["profiles"]["normal"]["residual_sound_count"] == 8
+    assert manifest["profiles"]["normal"]["residual_sound_count"] == 128

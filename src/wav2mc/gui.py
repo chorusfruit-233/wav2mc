@@ -1052,6 +1052,9 @@ class Wav2McApp:
         gain = gain_multiplier_from_db(gain_db)
         masking = self.masking_var.get()
         preserve_stereo = self.stereo_var.get()
+        preview_bank = inspect_device_pack(
+            Path(self.bank_output_var.get() or "output/device_banks").expanduser(), mode,
+        )
 
         def work(
             progress_callback: ProgressCallback,
@@ -1074,6 +1077,7 @@ class Wav2McApp:
                 device_profile=mode,
                 audio_stream=stream,
                 preserve_stereo=preserve_stereo,
+                preview_resource_pack=preview_bank.path if preview_bank.state == "valid" else None,
                 progress_callback=progress_callback,
                 cancel_check=cancel_check,
             )

@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+from contextlib import ExitStack
 from dataclasses import replace
 from pathlib import Path
 
 import numpy as np
 
-from .analysis import AudioFrame, analyse_audio, scale_frame_residuals
+from .analysis import AudioFrame, _noise_variant, analyse_audio, scale_frame_residuals
+from .grains import residual_grain_reference_rms
 from .audio import (
     load_audio,
     peak_normalize,
@@ -30,6 +32,10 @@ from .preview import (
     calculate_safe_scale,
     synthesize_preview,
     synthesize_residual_frame,
+    preview_size,
+    residual_frame_size,
+    open_preview_bank,
+    GrainLookup,
 )
 from .utils import (
     CancelCheck,
@@ -85,6 +91,9 @@ def _residual_frame_scales(
     gain_limits: dict[str, float] | None = None,
     progress_callback: ProgressCallback | None = None,
     cancel_check: CancelCheck | None = None,
+    encoded: bool = False,
+    bank_grain_level: float = 1.0,
+    bank_lookup: GrainLookup | None = None,
 ) -> dict[str, list[float]]:
     limits = dict(gain_limits or RESIDUAL_GAIN_LIMITS)
     if set(limits) != set(RESIDUAL_LAYER_ORDER):
@@ -92,6 +101,12 @@ def _residual_frame_scales(
     if any(not 0.0 <= limit <= 1.0 for limit in limits.values()):
         raise ValueError("Residual gain limits must be between 0 and 1")
 
+    required_size = max(tone_preview.shape[0], preview_size(frames, config))
+    if required_size > tone_preview.shape[0]:
+        padding = (0, required_size - tone_preview.shape[0])
+        tone_preview = np.pad(
+            tone_preview, padding if tone_preview.ndim == 1 else (padding, (0, 0)),
+        )
     residual_mix = np.zeros_like(tone_preview)
     scales = {kind: [] for kind in RESIDUAL_LAYER_ORDER}
     previous_scales = {
@@ -110,7 +125,7 @@ def _residual_frame_scales(
                 "Limiting residual layers",
             )
         start = frame.index * config.hop_size
-        end = start + config.window_size
+        end = start + residual_frame_size(frame, config)
         for kind in RESIDUAL_LAYER_ORDER:
             maximum_component = max(
                 (
@@ -132,6 +147,9 @@ def _residual_frame_scales(
                 config,
                 kind=kind,
                 stereo=tone_preview.ndim == 2,
+                encoded=encoded,
+                bank_grain_level=bank_grain_level,
+                bank_lookup=bank_lookup,
             )
             base = tone_scale * tone_preview[start:end] + residual_mix[start:end]
             raw_limit = _maximum_additive_scale(
@@ -228,6 +246,48 @@ def _analyse_channels(
 
     frames = []
     for left, right in zip(*channel_frames, strict=True):
+        left_noise = {c.band_index: c for c in left.residual_components if c.kind == "noise"}
+        right_residuals = []
+        start = left.index * config.hop_size
+        chunk = audio[start:start + config.window_size]
+        spectra = np.fft.rfft(chunk, n=config.window_size, axis=0)
+        bins = np.fft.rfftfreq(config.window_size, 1 / config.sample_rate)
+        for component in right.residual_components:
+            partner = left_noise.get(component.band_index)
+            if component.kind == "noise" and partner is not None:
+                band = (bins >= component.low_frequency) & (bins < component.high_frequency)
+                a, b = spectra[band, 0], spectra[band, 1]
+                denominator = float(np.sqrt(np.vdot(a, a).real * np.vdot(b, b).real))
+                correlation = float(np.clip(np.vdot(a, b).real / max(denominator, 1e-20), -1, 1))
+                # Share grains in proportion to the measured coherence. A
+                # deterministic low-discrepancy sequence also handles partially
+                # correlated ambience without adding more sound commands.
+                threshold = (
+                    (left.index + 1) * 0.61803398875 + component.band_index * 0.41421356237
+                ) % 1
+                coherent = threshold < abs(correlation)
+                variant = partner.variant if coherent else _noise_variant(
+                    left.index, component.band_index + 103, config.residual_variant_count,
+                    partner.variant,
+                )
+                def rms(value: int) -> float:
+                    return residual_grain_reference_rms(
+                        config.sample_rate, config.window_size, component.band_index,
+                        component.low_frequency, component.high_frequency, value, "noise",
+                    )
+                amplitude = component.amplitude * rms(component.variant) / max(rms(variant), 1e-12)
+                if coherent:
+                    polarity = -1 if correlation < 0 else 1
+                else:
+                    # Random-looking polarity removes the finite bank's own
+                    # cross-correlation bias between different noise variants.
+                    sign_phase = (
+                        (left.index + 1) * 0.75487766625 + component.band_index * 0.56984029099
+                    ) % 1
+                    polarity = -1 if sign_phase < 0.5 else 1
+                component = replace(component, variant=variant, amplitude=amplitude,
+                                    polarity=polarity)
+            right_residuals.append(component)
         frames.append(
             AudioFrame(
                 index=left.index,
@@ -242,7 +302,7 @@ def _analyse_channels(
                     )
                     + tuple(
                         replace(component, pan=1.0)
-                        for component in right.residual_components
+                        for component in right_residuals
                     )
                 ),
             )
@@ -269,6 +329,7 @@ def convert_audio(
     preserve_stereo: bool = True,
     progress_callback: ProgressCallback | None = None,
     cancel_check: CancelCheck | None = None,
+    preview_resource_pack: Path | None = None,
 ) -> dict[str, Path]:
     calibration = loudness_calibration or LoudnessCalibration()
     calibration.validate()
@@ -301,7 +362,10 @@ def convert_audio(
     with temporary_directory(
         ".wav2mc-convert-",
         directory=output_dir,
-    ) as temp:
+    ) as temp, ExitStack() as stack:
+        bank_lookup = stack.enter_context(open_preview_bank(
+            preview_resource_pack, config, bank_namespace, bank_grain_level,
+        )) if preview_resource_pack is not None else None
         decoded = temp / "decoded.wav"
         staged_paths = {
             "data_pack": temp / data_pack_path.name,
@@ -348,6 +412,9 @@ def convert_audio(
             tone_frames,
             config,
             stereo=stereo,
+            encoded=True,
+            bank_grain_level=bank_grain_level,
+            bank_lookup=bank_lookup,
             progress_callback=scaled_progress(
                 progress_callback,
                 0.62,
@@ -386,6 +453,9 @@ def convert_audio(
             tone_scale,
             requested_gain,
             maximum_supported,
+            encoded=True,
+            bank_grain_level=bank_grain_level,
+            bank_lookup=bank_lookup,
             progress_callback=scaled_progress(
                 progress_callback,
                 0.675,
@@ -404,6 +474,9 @@ def convert_audio(
             target_frames,
             config,
             stereo=stereo,
+            encoded=True,
+            bank_grain_level=bank_grain_level,
+            bank_lookup=bank_lookup,
             progress_callback=scaled_progress(
                 progress_callback,
                 0.745,
@@ -561,6 +634,12 @@ def convert_audio(
             "preview_peak": (
                 float(np.max(np.abs(preview))) if preview.size else 0.0
             ),
+            "preview_model": (
+                "resource-pack Vorbis samples with linear pitch resampling"
+                if preview_resource_pack else
+                "bank Vorbis round-trip with linear pitch resampling"
+            ),
+            "preview_resource_pack": str(preview_resource_pack) if preview_resource_pack else None,
             "average_components_per_frame": (
                 float(component_counts.mean()) if component_counts.size else 0.0
             ),
@@ -576,11 +655,14 @@ def convert_audio(
             "component_model": {
                 "name": "hybrid-tonal-transient-noise",
                 "tonal_amplitude_model": "Hann projection with playback-speed gain correction",
-                "tonal_frequency_model": "full-spectrum peaks with interpolated playback pitch",
+                "tonal_frequency_model": "independent spectral peaks with matched chirp grains",
                 "tonal_pitch_range": [0.5, 2.0],
                 "hybrid_residual_enabled": config.hybrid_residual,
                 "noise_amplitude_model": "band RMS * spectral flatness ^ 0.25",
-                "noise_variant_model": "deterministic hashed selection without adjacent repeats",
+                "noise_variant_model": "deterministic variants with per-band stereo coherence",
+                "boundary_model": "dedicated start, end and single-frame envelopes",
+                "transient_timing_resolution_ms": 5,
+                "transient_envelopes": ["fast", "medium", "slow"],
                 "transient_hysteresis": {
                     "cooldown_ms": 50,
                     "forced_rearm_ms": 100,

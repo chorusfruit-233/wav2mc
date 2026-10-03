@@ -5,8 +5,11 @@ from dataclasses import dataclass, replace
 import numpy as np
 
 from .audio import sqrt_hann, tonal_window
-from .config import AudioConfig, QualityProfile
-from .grains import residual_grain_reference_rms
+from .config import (
+    AudioConfig, CHIRP_RATES, QualityProfile, TONAL_ENVELOPES,
+    TRANSIENT_DELAYS_MS, TRANSIENT_SHAPES,
+)
+from .grains import residual_grain_reference_rms, tonal_variants
 from .utils import (
     CancelCheck,
     ProgressCallback,
@@ -23,11 +26,17 @@ class Component:
     amplitude: float
     pan: float = 0.0
     pitch: float = 1.0
+    chirp_rate: int = 0
+    envelope: str = "hann"
 
     def __post_init__(self) -> None:
         if not np.isfinite(self.pitch) or not 0.5 <= self.pitch <= 2.0:
             raise ValueError("pitch must be between 0.5 and 2.0")
         object.__setattr__(self, "pitch", round(float(self.pitch), 8))
+        if self.chirp_rate not in CHIRP_RATES or self.envelope not in TONAL_ENVELOPES:
+            raise ValueError("Unknown tonal grain variant")
+        if self.chirp_rate and self.envelope != "hann":
+            raise ValueError("Boundary grains do not support chirps")
 
     @property
     def playback_frequency(self) -> float:
@@ -43,6 +52,21 @@ class ResidualComponent:
     variant: int
     amplitude: float
     pan: float = 0.0
+    delay_ms: int = 0
+    shape: str = "medium"
+    polarity: int = 1
+
+    def __post_init__(self) -> None:
+        if self.kind not in ("noise", "transient"):
+            raise ValueError("Unknown residual kind")
+        if self.delay_ms not in TRANSIENT_DELAYS_MS or self.shape not in TRANSIENT_SHAPES:
+            raise ValueError("Unknown transient grain variant")
+        if self.polarity not in (-1, 1):
+            raise ValueError("polarity must be -1 or 1")
+        if self.kind == "noise" and (self.delay_ms or self.shape != "medium"):
+            raise ValueError("Noise grains do not support transient envelopes")
+        if self.kind == "transient" and self.polarity != 1:
+            raise ValueError("Transient grains do not support inverted polarity")
 
 
 @dataclass(frozen=True)
@@ -284,7 +308,20 @@ def _transient_components_by_frame(
         # Anchor the tick to the attack inside the short window, not its left
         # edge. A final attack may need a residual-only tick beyond tonal frames.
         attack_sample = start + int(np.argmax(np.abs(chunk)))
-        output_index = int(np.rint(attack_sample / config.hop_size))
+        # Encode the sub-tick delay in the resource rather than rounding attacks
+        # to the nearest 50 ms tick, which can play them before their onset.
+        attack_ms = int(np.rint(attack_sample * 1000 / config.sample_rate / 5)) * 5
+        output_index, delay_ms = divmod(attack_ms, round(config.hop_ms))
+        tail = audio[attack_sample:attack_sample + config.window_size]
+        energy = np.asarray(tail, dtype=np.float64) ** 2
+        cumulative = np.cumsum(energy)
+        duration_ms = 0.0
+        if cumulative.size and cumulative[-1] > 1e-20:
+            duration_ms = (
+                np.searchsorted(cumulative, cumulative[-1] * 0.85)
+                * 1000 / config.sample_rate
+            )
+        shape = "fast" if duration_ms < 10 else "slow" if duration_ms > 35 else "medium"
         amplitudes = band_increases[short_index]
         maximum = float(amplitudes.max(initial=0.0))
         if maximum <= 1e-10:
@@ -334,6 +371,8 @@ def _transient_components_by_frame(
                 high,
                 variant,
                 "transient",
+                0,
+                shape,
             )
             coefficient = float(amplitudes[position]) / max(
                 grain_rms,
@@ -346,6 +385,8 @@ def _transient_components_by_frame(
                 high_frequency=high,
                 variant=variant,
                 amplitude=min(coefficient, 1.0),
+                delay_ms=delay_ms,
+                shape=shape,
             )
             previous = frame_components.get(band_index)
             if previous is None or component.amplitude > previous.amplitude:
@@ -578,10 +619,61 @@ def _tonal_peak_candidates(
         if not 0.5 <= pitch <= 2.0:
             continue
         amplitude = float(2.0 * fine_magnitude[peak] / window_sum)
-        previous_peak = candidates.get(bank_index)
-        if previous_peak is None or amplitude > previous_peak[1]:
-            candidates[bank_index] = (frequency, amplitude, int(fft_bin))
+        # Several resolved peaks may use the same bank frequency with different
+        # playback pitches. Key by the measured peak, never by the bank grain.
+        candidates[int(fft_bin)] = (frequency, amplitude, bank_index)
     return candidates
+
+
+def _fit_chirp(
+    weighted_audio: np.ndarray, frequency: float, bank_frequency: int,
+    config: AudioConfig,
+) -> tuple[float, int]:
+    """Choose a reusable linear sweep by coherent energy, retaining steady tones."""
+    n = weighted_audio.size
+    time = np.arange(n) / config.sample_rate
+    center = n / (2 * config.sample_rate)
+    pitch = frequency / bank_frequency
+    best_frequency, best_rate = frequency, 0
+    best_energy = abs(np.dot(weighted_audio, np.exp(-2j * np.pi * frequency * time)))
+    for rate, envelope in tonal_variants(bank_frequency, config.sample_rate, n):
+        if not rate or envelope != "hann":
+            continue
+        actual_rate = rate * pitch ** 2
+        dechirped = weighted_audio * np.exp(-1j * np.pi * actual_rate * (time - center) ** 2)
+        magnitude = np.abs(np.fft.fft(dechirped, n=4 * n))
+        bin_hz = config.sample_rate / (4 * n)
+        first = max(1, round(frequency / bin_hz) - 4)
+        stop = min(magnitude.size // 2 - 1, round(frequency / bin_hz) + 5)
+        if first >= stop:
+            continue
+        peak = first + int(np.argmax(magnitude[first:stop]))
+        left, middle, right = np.log(np.maximum(magnitude[peak - 1:peak + 2], 1e-30))
+        curvature = left - 2 * middle + right
+        offset = 0.0 if abs(curvature) < 1e-12 else np.clip(
+            0.5 * (left - right) / curvature, -0.5, 0.5,
+        )
+        measured = (peak + offset) * bin_hz
+        candidate_pitch = measured / bank_frequency
+        for _ in range(3):
+            error = (
+                bank_frequency * candidate_pitch
+                + rate * center * (candidate_pitch ** 2 - candidate_pitch) - measured
+            )
+            candidate_pitch -= error / (bank_frequency + rate * center * (2 * candidate_pitch - 1))
+        if not 0.5 <= candidate_pitch <= 2.0:
+            continue
+        cycles = (
+            (bank_frequency - rate * center) * candidate_pitch * time
+            + 0.5 * rate * (candidate_pitch * time) ** 2
+        )
+        energy = abs(np.dot(weighted_audio, np.exp(-2j * np.pi * cycles)))
+        # Avoid turning stationary noise, leakage or interpolation error into
+        # a frequency sweep when it brings no useful concentration gain.
+        if energy > best_energy * 1.015:
+            best_energy = energy
+            best_frequency, best_rate = bank_frequency * candidate_pitch, rate
+    return best_frequency, best_rate
 
 
 def analyse_audio(
@@ -659,11 +751,10 @@ def analyse_audio(
             quality.relative_floor_db, previous_indices,
             tracking_radius_steps, tracking_hysteresis,
         )
-        amplitudes = np.zeros(frequencies.size, dtype=np.float64)
-        measured_frequencies = frequencies.astype(np.float64)
-        for index, (frequency, amplitude, _) in candidates.items():
-            amplitudes[index] = amplitude
-            measured_frequencies[index] = frequency
+        peak_bins = list(candidates)
+        amplitudes = np.asarray([candidates[b][1] for b in peak_bins])
+        measured_frequencies = np.asarray([candidates[b][0] for b in peak_bins])
+        bank_indices = np.asarray([candidates[b][2] for b in peak_bins], dtype=int)
 
         maximum = float(amplitudes.max(initial=0.0))
         if maximum <= 1e-10:
@@ -679,7 +770,7 @@ def analyse_audio(
             continue
 
         floor = maximum * 10.0 ** (quality.relative_floor_db / 20.0)
-        local_peaks = set(candidates)
+        local_peaks = set(range(len(peak_bins)))
         perceptual_levels = _perceptual_levels_db(amplitudes, measured_frequencies)
         if psychoacoustic_masking:
             local_peaks = _audible_peak_indices(
@@ -693,7 +784,7 @@ def analyse_audio(
         def score(index: int) -> float:
             base = float(perceptual_levels[index])
             nearest_track = min(
-                (abs(index - previous) for previous in previous_indices),
+                (abs(int(bank_indices[index]) - previous) for previous in previous_indices),
                 default=tracking_radius_steps + 1,
             )
             if nearest_track <= tracking_radius_steps:
@@ -704,8 +795,8 @@ def analyse_audio(
         for low, high, count in quality.band_limits:
             band = [
                 i
-                for i, frequency in enumerate(frequencies)
-                if low <= int(frequency) < high
+                for i, frequency in enumerate(measured_frequencies)
+                if low <= frequency < high
                 and amplitudes[i] >= floor
                 and i in local_peaks
             ]
@@ -714,15 +805,44 @@ def analyse_audio(
 
         selected = list(dict.fromkeys(selected))
         selected = selected[: quality.max_components]
-        selected.sort(key=lambda i: int(frequencies[i]))
+        selected.sort(key=lambda i: measured_frequencies[i])
 
         components: list[Component] = []
+        edge_size = min(n, max(1, round(config.sample_rate * 0.010)))
+        valid_size = min(n, max(0, audio.size - start))
+        frame_rms = np.sqrt(np.mean(chunk ** 2))
+        opening_level = np.sqrt(np.mean(chunk[:edge_size] ** 2))
+        ending_level = np.sqrt(np.mean(chunk[max(0, valid_size - edge_size):valid_size] ** 2))
+        coefficient_sum = max(float(np.sum(tone_window[:valid_size])), 1e-12)
         for index in selected:
-            pitch = round(candidates[index][0] / float(frequencies[index]), 8)
-            frequency = float(frequencies[index]) * pitch
-            coefficient = (2.0 / window_sum) * np.dot(
+            bank_frequency = int(frequencies[bank_indices[index]])
+            pitch = round(measured_frequencies[index] / bank_frequency, 8)
+            frequency = bank_frequency * pitch
+            chirp_rate = 0
+            envelope = "hann"
+            if frame_index == 0 and opening_level >= frame_rms * 0.7:
+                envelope = "start"
+            if frame_index == tonal_frame_count - 1 and ending_level >= frame_rms * 0.7:
+                envelope = "both" if envelope == "start" else "end"
+            nearby_peak = any(
+                other != index and abs(measured_frequencies[other] - frequency) < 60
+                for other in selected
+            )
+            if envelope == "hann" and not nearby_peak:
+                frequency, chirp_rate = _fit_chirp(
+                    weighted_tone, frequency, bank_frequency, config,
+                )
+                pitch = round(frequency / bank_frequency, 8)
+            # The chirp is centered on the resource grain, whose clock is sped
+            # up by pitch. Fit exactly the same phase law that playback uses.
+            cycles = (
+                (bank_frequency - chirp_rate * n / (2 * config.sample_rate))
+                * pitch * sample_positions
+                + 0.5 * chirp_rate * (pitch * sample_positions) ** 2
+            )
+            coefficient = (2.0 / coefficient_sum) * np.dot(
                 weighted_tone,
-                np.exp(-2.0j * np.pi * frequency * sample_positions),
+                np.exp(-2.0j * np.pi * cycles),
             )
             phase = float(np.angle(coefficient)) % (2.0 * np.pi)
             phase_index = int(
@@ -730,19 +850,21 @@ def analyse_audio(
             ) % config.phase_count
             components.append(
                 Component(
-                    frequency=int(frequencies[index]),
+                    frequency=bank_frequency,
                     phase_index=phase_index,
                     # Playback speed changes grain duration and overlap gain.
                     amplitude=float(abs(coefficient)) * pitch,
                     pitch=pitch,
+                    chirp_rate=chirp_rate,
+                    envelope=envelope,
                 )
             )
 
-        previous_indices = set(selected)
+        previous_indices = {int(bank_indices[index]) for index in selected}
         transients = transient_components.get(frame_index, ())
         noise_components = _noise_residual_components(
             spectrum,
-            [candidates[index][2] for index in selected],
+            [peak_bins[index] for index in selected],
             config,
             quality,
             frame_index,

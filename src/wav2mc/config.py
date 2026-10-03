@@ -3,6 +3,14 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 
 
+BANK_REVISION = 2
+CHIRP_RATES = (0, -1200, -600, -300, 300, 600, 1200)
+TONAL_ENVELOPES = ("hann", "start", "end", "both")
+TRANSIENT_SHAPES = ("medium", "fast", "slow")
+TRANSIENT_DELAYS_MS = tuple(range(0, 50, 5))
+VORBIS_COMPRESSION_LEVEL = 0.1
+
+
 @dataclass(frozen=True)
 class QualityProfile:
     name: str
@@ -286,6 +294,12 @@ def device_audio_config(config: AudioConfig, profile: DeviceProfile) -> AudioCon
 
 def audio_config_metadata(config: AudioConfig) -> dict[str, object]:
     return {
+        "bank_revision": BANK_REVISION,
+        "chirp_rates_hz_per_second": list(CHIRP_RATES),
+        "tonal_envelopes": list(TONAL_ENVELOPES),
+        "transient_shapes": list(TRANSIENT_SHAPES),
+        "transient_delays_ms": list(TRANSIENT_DELAYS_MS),
+        "vorbis_compression_level": VORBIS_COMPRESSION_LEVEL,
         "sample_rate": config.sample_rate,
         "grain_ms": config.grain_ms,
         "hop_ms": config.hop_ms,

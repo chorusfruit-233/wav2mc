@@ -17,7 +17,10 @@ def test_attacks_at_recording_boundaries_are_preserved(onset_ms: int) -> None:
     attacks = [f for f in frames if any(c.kind == "transient" for c in f.residual_components)]
 
     assert len(attacks) == 1
-    assert abs(attacks[0].index * config.hop_ms - onset_ms) <= config.hop_ms / 2
+    assert all(
+        abs(attacks[0].index * config.hop_ms + c.delay_ms - onset_ms) <= 5
+        for c in attacks[0].residual_components if c.kind == "transient"
+    )
     assert np.all(np.isfinite(synthesize_preview(frames, config)))
     if onset_ms >= 960:
         assert len(frames) > 19
@@ -45,7 +48,7 @@ def test_late_transient_in_one_stereo_channel_keeps_tail() -> None:
         frames, config, np.zeros_like(preview), 1.0, 1.0, 1.0,
     )
 
-    assert len(frames) == 21
+    assert len(frames) == 20
     assert all(c.pan == 1 for c in frames[-1].residual_components)
     assert not np.any(preview[:, 0])
     assert np.any(preview[config.sample_rate:, 1])

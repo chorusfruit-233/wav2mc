@@ -3,6 +3,7 @@
   "source": "demo/test_tone.wav",
   "input_audio_stream": 0,
   "song_namespace": "test_song",
+  "song_name": "test_song",
   "input_duration_seconds": 4.0,
   "output_duration_seconds": 4.000021,
   "input_channels": 1,
@@ -44,16 +45,16 @@
     "model": "A-weighted asymmetric Bark spreading",
     "masking_offset_db": 7.0
   },
-  "safe_scale": 0.9735127080301949,
+  "safe_scale": 0.9610063444598422,
   "layer_scales": {
-    "tone": 0.9735127080301949,
+    "tone": 0.9610063444598422,
     "residual": {
       "transient": {
-        "mean": 0.4,
-        "minimum": 0.4,
-        "maximum": 0.4,
-        "p10": 0.4,
-        "p90": 0.4,
+        "mean": 0.10678616911172867,
+        "minimum": 0.10678616911172867,
+        "maximum": 0.10678616911172867,
+        "p10": 0.10678616911172867,
+        "p90": 0.10678616911172867,
         "gain_limit": 0.4
       },
       "noise": {
@@ -67,7 +68,9 @@
       "release_ms": 200
     }
   },
-  "preview_peak": 0.8799998760223389,
+  "preview_peak": 0.8799999952316284,
+  "preview_model": "resource-pack Vorbis samples with linear pitch resampling",
+  "preview_resource_pack": "demo/wav2mc_test_bank_400_900hz_4phase.zip",
   "average_components_per_frame": 3.0126582278481013,
   "maximum_components_per_frame": 4,
   "estimated_playsound_commands_per_second": 60.25316455696203,
@@ -75,14 +78,21 @@
   "component_model": {
     "name": "hybrid-tonal-transient-noise",
     "tonal_amplitude_model": "Hann projection with playback-speed gain correction",
-    "tonal_frequency_model": "full-spectrum peaks with interpolated playback pitch",
+    "tonal_frequency_model": "independent spectral peaks with matched chirp grains",
     "tonal_pitch_range": [
       0.5,
       2.0
     ],
     "hybrid_residual_enabled": true,
     "noise_amplitude_model": "band RMS * spectral flatness ^ 0.25",
-    "noise_variant_model": "deterministic hashed selection without adjacent repeats",
+    "noise_variant_model": "deterministic variants with per-band stereo coherence",
+    "boundary_model": "dedicated start, end and single-frame envelopes",
+    "transient_timing_resolution_ms": 5,
+    "transient_envelopes": [
+      "fast",
+      "medium",
+      "slow"
+    ],
     "transient_hysteresis": {
       "cooldown_ms": 50,
       "forced_rearm_ms": 100,
@@ -100,10 +110,44 @@
     "volume_exponent": 1.0,
     "max_command_volume": 1.0,
     "maximum_reproducible_component_amplitude": 1.0,
-    "maximum_command_volume_used": 0.575829,
-    "maximum_predicted_amplitude_error": 4.123061063121547e-07
+    "maximum_command_volume_used": 0.568431,
+    "maximum_predicted_amplitude_error": 4.422952391003321e-07
   },
   "audio_config": {
+    "bank_revision": 2,
+    "chirp_rates_hz_per_second": [
+      0,
+      -1200,
+      -600,
+      -300,
+      300,
+      600,
+      1200
+    ],
+    "tonal_envelopes": [
+      "hann",
+      "start",
+      "end",
+      "both"
+    ],
+    "transient_shapes": [
+      "medium",
+      "fast",
+      "slow"
+    ],
+    "transient_delays_ms": [
+      0,
+      5,
+      10,
+      15,
+      20,
+      25,
+      30,
+      35,
+      40,
+      45
+    ],
+    "vorbis_compression_level": 0.1,
     "sample_rate": 48000,
     "grain_ms": 100.0,
     "hop_ms": 50.0,
@@ -143,6 +187,40 @@
   },
   "required_resource_pack": {
     "namespace": "wav2mc",
+    "bank_revision": 2,
+    "chirp_rates_hz_per_second": [
+      0,
+      -1200,
+      -600,
+      -300,
+      300,
+      600,
+      1200
+    ],
+    "tonal_envelopes": [
+      "hann",
+      "start",
+      "end",
+      "both"
+    ],
+    "transient_shapes": [
+      "medium",
+      "fast",
+      "slow"
+    ],
+    "transient_delays_ms": [
+      0,
+      5,
+      10,
+      15,
+      20,
+      25,
+      30,
+      35,
+      40,
+      45
+    ],
+    "vorbis_compression_level": 0.1,
     "sample_rate": 48000,
     "grain_ms": 100.0,
     "hop_ms": 50.0,

@@ -172,7 +172,10 @@ def build_data_pack(
                 )
             lines = []
             for component in frame.components:
-                event = sound_event_name(component.frequency, component.phase_index)
+                event = sound_event_name(
+                    component.frequency, component.phase_index,
+                    component.chirp_rate, component.envelope,
+                )
                 pitch = "1.0" if component.pitch == 1.0 else f"{component.pitch:.8f}"
                 volume = minecraft_command_volume(
                     component.amplitude,
@@ -191,6 +194,9 @@ def build_data_pack(
                     component.kind,
                     component.band_index,
                     component.variant,
+                    component.delay_ms,
+                    component.shape,
+                    component.polarity,
                 )
                 volume = minecraft_command_volume(
                     component.amplitude,

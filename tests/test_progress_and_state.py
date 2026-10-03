@@ -135,6 +135,7 @@ def test_gui_settings_validate_and_save_atomically(tmp_path: Path) -> None:
 @pytest.mark.parametrize("mismatch", [
     "phase_count", "old_window", "missing_window",
     "old_minecraft_version", "old_pack_format",
+    "old_bank_revision",
 ])
 def test_pack_status_recognizes_valid_and_mismatched_metadata(
     tmp_path: Path, mismatch: str,
@@ -167,6 +168,8 @@ def test_pack_status_recognizes_valid_and_mismatched_metadata(
         del metadata["tonal_window"]
     elif mismatch == "old_minecraft_version":
         metadata["minecraft_version"] = "26.2"
+    elif mismatch == "old_bank_revision":
+        metadata.pop("bank_revision")
     else:
         resource_format = 88.0
     with zipfile.ZipFile(target, "w") as archive:
