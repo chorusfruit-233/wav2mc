@@ -5,7 +5,7 @@ from pathlib import Path
 import numpy as np
 import soundfile as sf
 
-from .audio import sqrt_hann
+from .audio import tonal_window
 from .config import (
     DEVICE_PROFILES,
     DEFAULT_DEVICE_PACK_PROFILES,
@@ -47,7 +47,7 @@ def build_resource_pack(
         raise ValueError("grain_level must be in (0, 1]")
 
     n = config.window_size
-    window = sqrt_hann(n)
+    window = tonal_window(n)
     positions = np.arange(n, dtype=np.float64) / config.sample_rate
 
     output.parent.mkdir(parents=True, exist_ok=True)

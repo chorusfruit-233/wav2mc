@@ -217,8 +217,13 @@ def _analyse_channels(
                 cancel_check=cancel_check,
             )
         )
-    if len(channel_frames[0]) != len(channel_frames[1]):
-        raise ValueError("Stereo channel analysis produced mismatched frame counts")
+    # A late transient can extend only one channel by a tick. Preserve its tail
+    # while keeping both channels aligned for preview and command generation.
+    frame_count = max(map(len, channel_frames))
+    for channel in channel_frames:
+        channel.extend(
+            AudioFrame(index, ()) for index in range(len(channel), frame_count)
+        )
 
     frames = []
     for left, right in zip(*channel_frames, strict=True):
@@ -567,9 +572,12 @@ def convert_audio(
             "actual_playsound_command_count": int(component_counts.sum()),
             "component_model": {
                 "name": "hybrid-tonal-transient-noise",
+                "tonal_amplitude_model": "Hann projection with playback-speed gain correction",
+                "tonal_frequency_model": "full-spectrum peaks with interpolated playback pitch",
+                "tonal_pitch_range": [0.5, 2.0],
                 "hybrid_residual_enabled": config.hybrid_residual,
                 "noise_amplitude_model": "band RMS * spectral flatness ^ 0.25",
-                "noise_variant_model": "tracked deterministic sequence",
+                "noise_variant_model": "deterministic hashed selection without adjacent repeats",
                 "transient_hysteresis": {
                     "cooldown_ms": 50,
                     "forced_rearm_ms": 100,

@@ -173,6 +173,7 @@ def build_data_pack(
             lines = []
             for component in frame.components:
                 event = sound_event_name(component.frequency, component.phase_index)
+                pitch = "1.0" if component.pitch == 1.0 else f"{component.pitch:.8f}"
                 volume = minecraft_command_volume(
                     component.amplitude,
                     bank_grain_level,
@@ -183,7 +184,7 @@ def build_data_pack(
                     "run playsound "
                     f"{bank_namespace}:{event} {category} @s "
                     f"{_sound_coordinates(component.pan)} "
-                    f"{volume:.6f} 1.0 0.0"
+                    f"{volume:.6f} {pitch} 0.0"
                 )
             for component in frame.residual_components:
                 event = residual_event_name(

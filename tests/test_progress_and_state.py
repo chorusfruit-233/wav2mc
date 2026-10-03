@@ -132,7 +132,10 @@ def test_gui_settings_validate_and_save_atomically(tmp_path: Path) -> None:
     assert load_gui_settings(path) == GuiSettings()
 
 
-def test_pack_status_recognizes_valid_and_mismatched_metadata(tmp_path: Path) -> None:
+@pytest.mark.parametrize("mismatch", ["phase_count", "old_window", "missing_window"])
+def test_pack_status_recognizes_valid_and_mismatched_metadata(
+    tmp_path: Path, mismatch: str,
+) -> None:
     profile = DEVICE_PROFILES["normal"]
     config = device_audio_config(AudioConfig(), profile)
     target = tmp_path / "wav2mc_normal_sine_bank.zip"
@@ -152,7 +155,12 @@ def test_pack_status_recognizes_valid_and_mismatched_metadata(tmp_path: Path) ->
 
     assert inspect_device_pack(tmp_path, "normal").state == "valid"
 
-    metadata["phase_count"] = 2
+    if mismatch == "phase_count":
+        metadata["phase_count"] = 2
+    elif mismatch == "old_window":
+        metadata["tonal_window"] = "sqrt-hann"
+    else:
+        del metadata["tonal_window"]
     with zipfile.ZipFile(target, "w") as archive:
         archive.writestr("wav2mc-bank.json", json.dumps(metadata))
         archive.writestr(

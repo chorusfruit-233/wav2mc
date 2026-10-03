@@ -123,6 +123,13 @@ def sqrt_hann(window_size: int) -> np.ndarray:
     return np.sqrt(np.hanning(window_size)).astype(np.float32)
 
 
+def tonal_window(window_size: int) -> np.ndarray:
+    """Crossfade coherent tones at 50% overlap without periodic gain pumping."""
+    if window_size < 2:
+        raise ValueError("window_size must be at least 2")
+    return np.hanning(window_size).astype(np.float32)
+
+
 def preprocess_audio(
     source: Path,
     target: Path,

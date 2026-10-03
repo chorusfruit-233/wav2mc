@@ -1,11 +1,18 @@
+import io
+import json
+import zipfile
 from pathlib import Path
 
 import numpy as np
+import pytest
+import soundfile as sf
 
 from wav2mc.analysis import AudioFrame, Component, analyse_audio
-from wav2mc.audio import sqrt_hann
+from wav2mc.audio import sqrt_hann, tonal_window
+from wav2mc.bank import build_resource_pack
 from wav2mc.config import (
     DEFAULT_DATA_PACK_FORMAT,
+    DEFAULT_RESOURCE_PACK_FORMAT,
     AudioConfig,
     QUALITY_PROFILES,
     QualityProfile,
@@ -18,6 +25,72 @@ def test_window_endpoints_are_zero() -> None:
     window = sqrt_hann(4800)
     assert window[0] == 0.0
     assert window[-1] == 0.0
+
+
+def test_tonal_window_preserves_gain_across_overlapping_grains() -> None:
+    window = tonal_window(4800)
+    assert window[0] == window[-1] == 0.0
+    np.testing.assert_allclose(window[:2400] + window[2400:], 1.0, atol=0.0004)
+
+
+@pytest.mark.parametrize("frequency", [80, 440, 1040, 4400])
+@pytest.mark.parametrize("phase_index", [0, 3, 7])
+def test_tonal_reconstruction_preserves_level_and_waveform(
+    frequency: int, phase_index: int,
+) -> None:
+    config = AudioConfig(min_frequency=60, max_frequency=8000, hybrid_residual=False)
+    time = np.arange(config.sample_rate) / config.sample_rate
+    phase = 2.0 * np.pi * phase_index / config.phase_count
+    audio = (0.6 * np.cos(2.0 * np.pi * frequency * time + phase)).astype(np.float32)
+
+    frames = analyse_audio(audio, config, QUALITY_PROFILES["normal"])
+    preview = synthesize_preview(frames, config)
+    # The first and last grain intentionally fade in/out; measure steady overlap.
+    reference = audio[config.window_size:-config.window_size]
+    actual = preview[config.window_size:audio.size - config.window_size]
+    relative_error = np.linalg.norm(reference - actual) / np.linalg.norm(reference)
+
+    assert relative_error < 0.003
+    np.testing.assert_allclose(
+        [frame.components[0].amplitude for frame in frames], 0.6, atol=0.002,
+    )
+
+
+def test_tonal_chord_preserves_relative_levels() -> None:
+    config = AudioConfig(min_frequency=80, max_frequency=2000, hybrid_residual=False)
+    time = np.arange(config.sample_rate) / config.sample_rate
+    audio = sum(
+        amplitude * np.cos(2.0 * np.pi * frequency * time)
+        for frequency, amplitude in [(440, 0.4), (660, 0.25), (880, 0.15)]
+    ).astype(np.float32)
+
+    frames = analyse_audio(audio, config, QUALITY_PROFILES["normal"])
+    preview = synthesize_preview(frames, config)
+    reference = audio[config.window_size:-config.window_size]
+    actual = preview[config.window_size:audio.size - config.window_size]
+
+    assert np.linalg.norm(reference - actual) / np.linalg.norm(reference) < 0.003
+
+
+def test_resource_pack_tone_matches_preview_envelope(tmp_path: Path) -> None:
+    config = AudioConfig(
+        min_frequency=440, max_frequency=440, phase_count=4, hybrid_residual=False,
+    )
+    target = tmp_path / "bank.zip"
+    build_resource_pack(target, config, DEFAULT_RESOURCE_PACK_FORMAT, grain_level=0.6)
+    frame = AudioFrame(0, (Component(440, 1, 0.6),))
+    expected = synthesize_preview([frame], config)
+
+    with zipfile.ZipFile(target) as archive:
+        metadata = json.loads(archive.read("wav2mc-bank.json"))
+        encoded = archive.read("assets/wav2mc/sounds/grain/f0440/p01.ogg")
+    actual, sample_rate = sf.read(io.BytesIO(encoded), dtype="float32")
+
+    assert metadata["tonal_window"] == "hann"
+    assert sample_rate == config.sample_rate
+    assert actual.shape == expected.shape
+    # Allow Vorbis coding error, while detecting an incompatible grain window.
+    assert np.linalg.norm(actual - expected) / np.linalg.norm(expected) < 0.04
 
 
 def test_stereo_preview_routes_components_to_separate_channels() -> None:

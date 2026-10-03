@@ -5,7 +5,12 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from wav2mc.analysis import AudioFrame, ResidualComponent, analyse_audio
+from wav2mc.analysis import (
+    AudioFrame,
+    ResidualComponent,
+    _noise_residual_components,
+    analyse_audio,
+)
 from wav2mc.bank import build_resource_pack
 from wav2mc.config import (
     DEFAULT_DATA_PACK_FORMAT,
@@ -28,6 +33,45 @@ def test_pure_tone_does_not_leak_into_noise_layer() -> None:
     assert all(not frame.residual_components for frame in frames)
 
 
+def test_noise_band_level_is_independent_of_other_band_flatness() -> None:
+    config = AudioConfig(min_frequency=80, max_frequency=314)
+    frequencies = np.fft.rfftfreq(config.window_size, 1.0 / config.sample_rate)
+    spectrum = np.zeros(frequencies.size, dtype=np.complex128)
+    spectrum[(frequencies >= 80) & (frequencies < 315)] = 100.0
+    changed = spectrum.copy()
+    upper_band = (frequencies >= 160) & (frequencies < 315)
+    shape = np.resize([1.0, 3.0], np.count_nonzero(upper_band))
+    # Keep this band's energy fixed, while changing only its flatness.
+    changed[upper_band] = 100.0 * shape / np.sqrt(np.mean(shape ** 2))
+
+    def levels(values: np.ndarray) -> dict[int, float]:
+        components = _noise_residual_components(
+            values, [], config, QUALITY_PROFILES["normal"], 0, 1.0, set(), {},
+        )
+        return {component.band_index: component.amplitude for component in components}
+
+    original_levels = levels(spectrum)
+    changed_levels = levels(changed)
+
+    assert original_levels.keys() == changed_levels.keys() == {1, 2}
+    assert changed_levels[1] == pytest.approx(original_levels[1])
+    assert changed_levels[2] < original_levels[2] * 0.9
+
+
+@pytest.mark.filterwarnings("error")
+@pytest.mark.parametrize("sample_count", [0, 1, 100, 1200])
+def test_short_audio_analysis_is_finite_without_warnings(sample_count: int) -> None:
+    config = AudioConfig(min_frequency=80, max_frequency=1000)
+    time = np.arange(sample_count) / config.sample_rate
+    audio = (0.5 * np.cos(2.0 * np.pi * 440 * time)).astype(np.float32)
+
+    frames = analyse_audio(audio, config, QUALITY_PROFILES["normal"])
+    preview = synthesize_preview(frames, config)
+
+    assert len(frames) == 1
+    assert np.all(np.isfinite(preview))
+
+
 def test_stochastic_audio_uses_noise_residual_layer() -> None:
     config = AudioConfig(min_frequency=80, max_frequency=12000)
     rng = np.random.default_rng(19)
@@ -48,7 +92,7 @@ def test_stochastic_audio_uses_noise_residual_layer() -> None:
     ) <= QUALITY_PROFILES["normal"].max_noise_components
 
 
-def test_continuous_noise_band_cycles_variants_without_repeating() -> None:
+def test_continuous_noise_band_changes_variants_without_repeating() -> None:
     config = AudioConfig(min_frequency=80, max_frequency=12000)
     rng = np.random.default_rng(29)
     audio = rng.normal(0.0, 0.2, config.sample_rate).astype(np.float32)
@@ -63,9 +107,7 @@ def test_continuous_noise_band_cycles_variants_without_repeating() -> None:
             tracked = previous.get(component.band_index)
             if tracked is not None and tracked[0] == frame.index - 1:
                 consecutive_pairs += 1
-                assert component.variant == (
-                    tracked[1] + 1
-                ) % config.residual_variant_count
+                assert component.variant != tracked[1]
             previous[component.band_index] = (frame.index, component.variant)
 
     assert consecutive_pairs > 0

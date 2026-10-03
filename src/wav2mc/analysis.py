@@ -4,7 +4,7 @@ from dataclasses import dataclass, replace
 
 import numpy as np
 
-from .audio import sqrt_hann
+from .audio import sqrt_hann, tonal_window
 from .config import AudioConfig, QualityProfile
 from .grains import residual_grain_reference_rms
 from .utils import (
@@ -22,6 +22,16 @@ class Component:
     phase_index: int
     amplitude: float
     pan: float = 0.0
+    pitch: float = 1.0
+
+    def __post_init__(self) -> None:
+        if not np.isfinite(self.pitch) or not 0.5 <= self.pitch <= 2.0:
+            raise ValueError("pitch must be between 0.5 and 2.0")
+        object.__setattr__(self, "pitch", round(float(self.pitch), 8))
+
+    @property
+    def playback_frequency(self) -> float:
+        return self.frequency * self.pitch
 
 
 @dataclass(frozen=True)
@@ -119,52 +129,6 @@ def _audible_peak_indices(
     return set(audible)
 
 
-def _track_peak_indices(
-    amplitudes: np.ndarray,
-    peak_indices: np.ndarray,
-    previous_indices: set[int],
-    tracking_radius_steps: int,
-    tracking_hysteresis: float,
-) -> set[int]:
-    """Associate nearby peaks and retain a track until a new bin is stronger."""
-    tracked_indices = {int(index) for index in peak_indices}
-    if tracking_radius_steps == 0 or not previous_indices or not tracked_indices:
-        return tracked_indices
-
-    associations: list[tuple[int, float, int, int]] = []
-    for previous_index in previous_indices:
-        for peak_index in tracked_indices:
-            distance = abs(peak_index - previous_index)
-            if distance <= tracking_radius_steps:
-                associations.append(
-                    (
-                        distance,
-                        -float(amplitudes[previous_index]),
-                        previous_index,
-                        peak_index,
-                    )
-                )
-
-    claimed_previous: set[int] = set()
-    claimed_peaks: set[int] = set()
-    for _, _, previous_index, peak_index in sorted(associations):
-        if previous_index in claimed_previous or peak_index in claimed_peaks:
-            continue
-        claimed_previous.add(previous_index)
-        claimed_peaks.add(peak_index)
-
-        if peak_index == previous_index:
-            continue
-        switch_level = float(amplitudes[previous_index]) * (
-            1.0 + tracking_hysteresis
-        )
-        if float(amplitudes[peak_index]) <= switch_level:
-            tracked_indices.remove(peak_index)
-            tracked_indices.add(previous_index)
-
-    return tracked_indices
-
-
 def _residual_band_masks(
     frequencies: np.ndarray,
     config: AudioConfig,
@@ -184,7 +148,6 @@ def _transient_components_by_frame(
     audio: np.ndarray,
     config: AudioConfig,
     quality: QualityProfile,
-    frame_count: int,
     progress_callback: ProgressCallback | None = None,
     cancel_check: CancelCheck | None = None,
 ) -> dict[int, tuple[ResidualComponent, ...]]:
@@ -228,6 +191,13 @@ def _transient_components_by_frame(
     )
     band_levels = np.zeros_like(band_increases)
     previous_magnitude = np.zeros(frequencies.size, dtype=np.float64)
+    first_chunk = np.asarray(audio[:short_size], dtype=np.float64)
+    # A localized opening attack has no preceding spectrum. Detect its high
+    # crest factor explicitly, without classifying a sustained sine as noise.
+    opening_attack = bool(
+        first_chunk.size
+        and np.max(first_chunk ** 2) > 9.0 * np.mean(first_chunk ** 2)
+    )
 
     for short_index in range(short_frame_count):
         if short_index % 64 == 0:
@@ -238,16 +208,23 @@ def _transient_components_by_frame(
                 short_index / max(1, short_frame_count),
                 "Detecting transients",
             )
-        start = short_index * short_hop
+        # Keep the final window inside the recording so zero padding cannot
+        # turn an ordinary ending into a spurious broadband attack.
+        start = min(short_index * short_hop, max(0, audio.size - short_size))
         chunk = audio[start : start + short_size]
         if chunk.size < short_size:
             chunk = np.pad(chunk, (0, short_size - chunk.size))
         magnitude = np.abs(np.fft.rfft(chunk * window, n=fft_size))
+        next_previous_magnitude = magnitude
         if short_index == 0:
             previous_magnitude = magnitude
-            continue
-
-        increase = np.maximum(magnitude - previous_magnitude, 0.0)
+            if not opening_attack:
+                continue
+            # The opening sample must not be attenuated by a zero window edge.
+            magnitude = np.abs(np.fft.rfft(chunk, n=fft_size))
+            increase = magnitude
+        else:
+            increase = np.maximum(magnitude - previous_magnitude, 0.0)
         current_levels = np.zeros(len(band_masks), dtype=np.float64)
         for band_position, (_, _, _, indices) in enumerate(band_masks):
             if not indices.size:
@@ -266,12 +243,15 @@ def _transient_components_by_frame(
         )
         weighted_level = float(np.dot(current_levels, band_weights))
         novelty[short_index] = weighted_increase / max(weighted_level, 1e-12)
-        previous_magnitude = magnitude
+        previous_magnitude = next_previous_magnitude
     emit_progress(progress_callback, "analyse", 1.0, "Transients detected")
 
     usable_novelty = novelty[1:]
-    median = float(np.median(usable_novelty))
-    mad = float(np.median(np.abs(usable_novelty - median)))
+    median = float(np.median(usable_novelty)) if usable_novelty.size else 0.0
+    mad = (
+        float(np.median(np.abs(usable_novelty - median)))
+        if usable_novelty.size else 0.0
+    )
     robust_deviation = 1.4826 * mad
     high_threshold = max(0.09, median + 3.0 * robust_deviation)
     low_threshold = max(
@@ -283,7 +263,7 @@ def _transient_components_by_frame(
     armed = True
     last_trigger = -100
 
-    for short_index in range(1, short_frame_count):
+    for short_index in range(short_frame_count):
         value = float(novelty[short_index])
         if not armed:
             if value <= low_threshold or short_index - last_trigger >= 10:
@@ -292,22 +272,28 @@ def _transient_components_by_frame(
                 continue
         if short_index - last_trigger < 5 or value < high_threshold:
             continue
-        local_low = max(1, short_index - 2)
+        local_low = max(0, short_index - 2)
         local_high = min(short_frame_count, short_index + 3)
         if value < float(np.max(novelty[local_low:local_high])):
             continue
 
-        output_index = int(
-            np.rint(short_index * short_hop / config.hop_size)
-        )
-        if not 0 <= output_index < frame_count:
+        start = min(short_index * short_hop, max(0, audio.size - short_size))
+        chunk = audio[start:start + short_size]
+        if not chunk.size:
             continue
+        # Anchor the tick to the attack inside the short window, not its left
+        # edge. A final attack may need a residual-only tick beyond tonal frames.
+        attack_sample = start + int(np.argmax(np.abs(chunk)))
+        output_index = int(np.rint(attack_sample / config.hop_size))
         amplitudes = band_increases[short_index]
         maximum = float(amplitudes.max(initial=0.0))
         if maximum <= 1e-10:
             continue
         floor = maximum * 10.0 ** (-24.0 / 20.0)
-        previous_levels = band_levels[short_index - 1]
+        previous_levels = (
+            band_levels[short_index - 1]
+            if short_index > 0 else np.zeros(len(band_masks))
+        )
         current_levels = band_levels[short_index]
         candidates = [
             position
@@ -373,6 +359,30 @@ def _transient_components_by_frame(
     }
 
 
+def _noise_variant(
+    frame_index: int,
+    band_index: int,
+    variant_count: int,
+    previous_variant: int | None,
+) -> int:
+    if variant_count <= 1:
+        return 0
+
+    # Mix frame and band with fixed integers so the sequence is reproducible,
+    # independent across bands, and does not cycle through the bank in order.
+    mask = (1 << 64) - 1
+    value = ((frame_index + 1) * 0x9E3779B97F4A7C15 + band_index) & mask
+    value = ((value ^ (value >> 30)) * 0xBF58476D1CE4E5B9) & mask
+    value = ((value ^ (value >> 27)) * 0x94D049BB133111EB) & mask
+    value ^= value >> 31
+
+    if previous_variant is None:
+        return value % variant_count
+    # Choose among all other grains rather than just advancing by one.
+    variant = value % (variant_count - 1)
+    return variant + (variant >= previous_variant)
+
+
 def _noise_residual_components(
     spectrum: np.ndarray,
     selected_fft_bins: list[int],
@@ -403,7 +413,7 @@ def _noise_residual_components(
     floor = reference_amplitude * 10.0 ** (
         quality.residual_floor_db / 20.0
     )
-    candidates: list[tuple[float, int, int, int, float]] = []
+    candidates: list[tuple[float, int, int, int, float, float]] = []
 
     for band_index, low, high, indices in band_masks:
         if band_index in excluded_bands or not indices.size:
@@ -438,12 +448,12 @@ def _noise_residual_components(
         )
 
         candidates.append(
-            (score, band_index, low, high, band_rms)
+            (score, band_index, low, high, band_rms, flatness)
         )
 
     candidates.sort(key=lambda item: item[0], reverse=True)
     selected = candidates[: quality.max_noise_components]
-    selected_bands = {band_index for _, band_index, _, _, _ in selected}
+    selected_bands = {band_index for _, band_index, _, _, _, _ in selected}
     for band_index, (variant, missing_frames) in tuple(noise_tracks.items()):
         if band_index in selected_bands:
             continue
@@ -454,14 +464,14 @@ def _noise_residual_components(
             noise_tracks[band_index] = (variant, missing_frames)
 
     components = []
-    for _, band_index, low, high, band_rms in selected:
+    for _, band_index, low, high, band_rms, flatness in selected:
         track = noise_tracks.get(band_index)
-        if track is None:
-            variant = (
-                frame_index * 3 + band_index
-            ) % config.residual_variant_count
-        else:
-            variant = (track[0] + 1) % config.residual_variant_count
+        variant = _noise_variant(
+            frame_index,
+            band_index,
+            config.residual_variant_count,
+            track[0] if track is not None else None,
+        )
         noise_tracks[band_index] = (variant, 0)
         grain_rms = residual_grain_reference_rms(
             config.sample_rate,
@@ -490,6 +500,90 @@ def _noise_residual_components(
     return tuple(components)
 
 
+def _tonal_peak_candidates(
+    weighted_audio: np.ndarray,
+    window_sum: float,
+    config: AudioConfig,
+    frequencies: np.ndarray,
+    relative_floor_db: float,
+    previous_indices: set[int],
+    tracking_radius_steps: int,
+    tracking_hysteresis: float,
+) -> dict[int, tuple[float, float, int]]:
+    """Find full-spectrum peaks, then choose a reusable bank grain for each."""
+    n = weighted_audio.size
+    bin_hz = config.sample_rate / n
+    magnitude = np.abs(np.fft.rfft(weighted_audio))
+    peaks = _candidate_indices(magnitude)
+    peaks = peaks[
+        (peaks * bin_hz >= config.min_frequency - bin_hz / 2)
+        & (peaks * bin_hz <= config.max_frequency + bin_hz / 2)
+        & (peaks > 0)
+        & (peaks < magnitude.size - 1)
+    ]
+    if not peaks.size or not frequencies.size:
+        return {}
+    maximum = float(magnitude[peaks].max())
+    if maximum <= 1e-10:
+        return {}
+    peaks = peaks[magnitude[peaks] >= maximum * 10.0 ** (relative_floor_db / 20.0)]
+
+    # Fourfold zero padding followed by log-parabolic interpolation resolves
+    # between-bin frequencies without multiplying the resource pack's size.
+    oversampling = 4
+    fine_magnitude = np.abs(np.fft.rfft(weighted_audio, n=n * oversampling))
+    candidates: dict[int, tuple[float, float, int]] = {}
+    for fft_bin in peaks:
+        center = int(fft_bin) * oversampling
+        first = max(1, center - oversampling // 2)
+        stop = min(fine_magnitude.size - 1, center + oversampling // 2 + 1)
+        peak = first + int(np.argmax(fine_magnitude[first:stop]))
+        left, middle, right = np.log(
+            np.maximum(fine_magnitude[peak - 1:peak + 2], 1e-30)
+        )
+        curvature = left - 2.0 * middle + right
+        offset = 0.0 if abs(curvature) < 1e-12 else float(
+            np.clip(0.5 * (left - right) / curvature, -0.5, 0.5)
+        )
+        frequency = (peak + offset) * bin_hz / oversampling
+        nearest_bin = round(frequency / bin_hz) * bin_hz
+        if abs(frequency - nearest_bin) < 0.01 and nearest_bin in frequencies:
+            frequency = nearest_bin
+        # At the lower edge, the negative-frequency image can bias a bass
+        # peak slightly outside the range. Do not discard its in-range bin.
+        if config.min_frequency <= fft_bin * bin_hz <= config.max_frequency:
+            frequency = float(np.clip(
+                frequency, config.min_frequency, config.max_frequency,
+            ))
+        if not config.min_frequency - 0.01 <= frequency <= config.max_frequency + 0.01:
+            continue
+        frequency = float(np.clip(frequency, config.min_frequency, config.max_frequency))
+
+        bank_index = int(np.argmin(np.abs(frequencies - frequency)))
+        distance = abs(float(frequencies[bank_index]) - frequency)
+        # Retain a nearby grain at the midpoint of two bank frequencies. The
+        # pitch still follows the measured peak, so this never detunes the tone.
+        nearby_tracks = sorted(
+            previous_indices, key=lambda i: abs(frequencies[i] - frequency),
+        )
+        for previous in nearby_tracks:
+            previous_distance = abs(float(frequencies[previous]) - frequency)
+            if (
+                abs(previous - bank_index) <= tracking_radius_steps
+                and distance >= previous_distance * (1.0 - tracking_hysteresis)
+            ):
+                bank_index = previous
+                break
+        pitch = frequency / float(frequencies[bank_index])
+        if not 0.5 <= pitch <= 2.0:
+            continue
+        amplitude = float(2.0 * fine_magnitude[peak] / window_sum)
+        previous_peak = candidates.get(bank_index)
+        if previous_peak is None or amplitude > previous_peak[1]:
+            candidates[bank_index] = (frequency, amplitude, int(fft_bin))
+    return candidates
+
+
 def analyse_audio(
     audio: np.ndarray,
     config: AudioConfig,
@@ -516,6 +610,9 @@ def analyse_audio(
         raise ValueError("This base project expects a 50% overlap: hop_size * 2 == window_size")
 
     window = sqrt_hann(n)
+    tone_window = tonal_window(n)
+    window_sum = float(np.sum(tone_window, dtype=np.float64))
+    sample_positions = np.arange(n, dtype=np.float64) / config.sample_rate
     frequencies = np.asarray(config.frequencies, dtype=np.int32)
     fft_bins = np.rint(frequencies * n / config.sample_rate).astype(np.int32)
     max_fft_bin = n // 2
@@ -529,10 +626,11 @@ def analyse_audio(
         audio,
         config,
         quality,
-        frame_count,
         progress_callback=scaled_progress(progress_callback, 0.0, 0.35),
         cancel_check=cancel_check,
     )
+    tonal_frame_count = frame_count
+    frame_count = max(frame_count, max(transient_components, default=-1) + 1)
 
     frames: list[AudioFrame] = []
     previous_indices: set[int] = set()
@@ -548,10 +646,24 @@ def analyse_audio(
                 "Analysing spectral frames",
             )
         start = frame_index * hop
+        if frame_index >= tonal_frame_count:
+            frames.append(
+                AudioFrame(frame_index, (), transient_components.get(frame_index, ()))
+            )
+            continue
         chunk = padded[start : start + n]
         spectrum = np.fft.rfft(chunk * window)
-        bank_spectrum = spectrum[fft_bins]
-        amplitudes = (2.0 * np.abs(bank_spectrum) / n).astype(np.float64)
+        weighted_tone = chunk * tone_window
+        candidates = _tonal_peak_candidates(
+            weighted_tone, window_sum, config, frequencies,
+            quality.relative_floor_db, previous_indices,
+            tracking_radius_steps, tracking_hysteresis,
+        )
+        amplitudes = np.zeros(frequencies.size, dtype=np.float64)
+        measured_frequencies = frequencies.astype(np.float64)
+        for index, (frequency, amplitude, _) in candidates.items():
+            amplitudes[index] = amplitude
+            measured_frequencies[index] = frequency
 
         maximum = float(amplitudes.max(initial=0.0))
         if maximum <= 1e-10:
@@ -567,18 +679,12 @@ def analyse_audio(
             continue
 
         floor = maximum * 10.0 ** (quality.relative_floor_db / 20.0)
-        local_peaks = _track_peak_indices(
-            amplitudes,
-            _candidate_indices(amplitudes),
-            previous_indices,
-            tracking_radius_steps,
-            tracking_hysteresis,
-        )
-        perceptual_levels = _perceptual_levels_db(amplitudes, frequencies)
+        local_peaks = set(candidates)
+        perceptual_levels = _perceptual_levels_db(amplitudes, measured_frequencies)
         if psychoacoustic_masking:
             local_peaks = _audible_peak_indices(
                 perceptual_levels,
-                frequencies,
+                measured_frequencies,
                 local_peaks,
                 quality.masking_offset_db,
             )
@@ -612,7 +718,13 @@ def analyse_audio(
 
         components: list[Component] = []
         for index in selected:
-            phase = float(np.angle(bank_spectrum[index])) % (2.0 * np.pi)
+            pitch = round(candidates[index][0] / float(frequencies[index]), 8)
+            frequency = float(frequencies[index]) * pitch
+            coefficient = (2.0 / window_sum) * np.dot(
+                weighted_tone,
+                np.exp(-2.0j * np.pi * frequency * sample_positions),
+            )
+            phase = float(np.angle(coefficient)) % (2.0 * np.pi)
             phase_index = int(
                 np.rint(phase / (2.0 * np.pi) * config.phase_count)
             ) % config.phase_count
@@ -620,7 +732,9 @@ def analyse_audio(
                 Component(
                     frequency=int(frequencies[index]),
                     phase_index=phase_index,
-                    amplitude=float(amplitudes[index]),
+                    # Playback speed changes grain duration and overlap gain.
+                    amplitude=float(abs(coefficient)) * pitch,
+                    pitch=pitch,
                 )
             )
 
@@ -628,7 +742,7 @@ def analyse_audio(
         transients = transient_components.get(frame_index, ())
         noise_components = _noise_residual_components(
             spectrum,
-            [int(fft_bins[index]) for index in selected],
+            [candidates[index][2] for index in selected],
             config,
             quality,
             frame_index,

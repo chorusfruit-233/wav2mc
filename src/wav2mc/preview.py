@@ -5,7 +5,7 @@ from functools import lru_cache
 import numpy as np
 
 from .analysis import AudioFrame
-from .audio import sqrt_hann
+from .audio import tonal_window
 from .config import AudioConfig
 from .grains import residual_grain
 from .utils import (
@@ -49,16 +49,32 @@ def synthesize_preview(
 ) -> np.ndarray:
     n = config.window_size
     hop = config.hop_size
-    window = sqrt_hann(n)
-    sample_positions = np.arange(n, dtype=np.float64) / config.sample_rate
-
-    @lru_cache(maxsize=1024)
-    def grain(frequency: int, phase_index: int) -> np.ndarray:
+    window = tonal_window(n)
+    @lru_cache(maxsize=128)
+    def grain(frequency: int, phase_index: int, pitch: float) -> np.ndarray:
+        # Ideal resampling of the bank grain: pitch changes both the carrier
+        # and the envelope duration. Vorbis and the game's resampler add error.
+        positions = np.arange(int(np.ceil(n / pitch)), dtype=np.float64) * pitch
+        if pitch == 1.0:
+            envelope = window
+        else:
+            envelope = 0.5 - 0.5 * np.cos(2.0 * np.pi * positions / (n - 1))
+            envelope[positions > n - 1] = 0.0
         phase = 2.0 * np.pi * phase_index / config.phase_count
-        values = window * np.cos(2.0 * np.pi * frequency * sample_positions + phase)
+        values = envelope * np.cos(
+            2.0 * np.pi * frequency * positions / config.sample_rate + phase
+        )
         return values.astype(np.float32)
 
-    output_size = max(n, (max(0, len(frames) - 1) * hop) + n)
+    output_size = max(
+        [n] + [
+            frame.index * hop + max(
+                n,
+                max((int(np.ceil(n / c.pitch)) for c in frame.components), default=n),
+            )
+            for frame in frames
+        ]
+    )
     if stereo is None:
         stereo = _is_stereo(frames)
     output_shape = (output_size, 2) if stereo else output_size
@@ -77,10 +93,10 @@ def synthesize_preview(
         start = frame.index * hop
         end = start + n
         for component in frame.components:
+            values = grain(component.frequency, component.phase_index, component.pitch)
             _add_panned(
-                output[start:end],
-                component.amplitude
-                * grain(component.frequency, component.phase_index),
+                output[start:start + values.size],
+                component.amplitude * values,
                 component.pan,
             )
         output[start:end] += synthesize_residual_frame(

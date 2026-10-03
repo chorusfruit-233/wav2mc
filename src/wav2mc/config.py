@@ -289,6 +289,7 @@ def audio_config_metadata(config: AudioConfig) -> dict[str, object]:
         "sample_rate": config.sample_rate,
         "grain_ms": config.grain_ms,
         "hop_ms": config.hop_ms,
+        "tonal_window": "hann",
         "min_frequency": config.min_frequency,
         "max_frequency": config.max_frequency,
         "frequency_grid": config.frequency_grid,
