@@ -7,6 +7,9 @@ from .bank import sound_event_name
 from .config import DEFAULT_MINECRAFT_VERSION, LoudnessCalibration
 from .grains import residual_event_name
 from .loudness import minecraft_command_volume
+from .playback import playback_functions, playback_metadata
+from .video import VideoFrames
+from .video_datapack import video_metadata, write_video_functions
 from .utils import (
     CancelCheck,
     ProgressCallback,
@@ -52,6 +55,7 @@ def _create_dispatch_tree(
     function_root: Path,
     namespace: str,
     frame_count: int,
+    objective: str,
     leaf_span: int = 16,
     cancel_check: CancelCheck | None = None,
 ) -> None:
@@ -63,7 +67,7 @@ def _create_dispatch_tree(
         if high - low + 1 <= leaf_span:
             lines = [
                 (
-                    f"execute if score #frame wav2mc matches {index} "
+                    f"execute if score #frame {objective} matches {index} "
                     f"run function {namespace}:frame/{index:06d}"
                 )
                 for index in range(low, high + 1)
@@ -76,11 +80,11 @@ def _create_dispatch_tree(
         right_name = f"n_{midpoint + 1:06d}_{high:06d}"
         lines = [
             (
-                f"execute if score #frame wav2mc matches {_range_spec(low, midpoint)} "
+                f"execute if score #frame {objective} matches {_range_spec(low, midpoint)} "
                 f"run function {namespace}:dispatch/{left_name}"
             ),
             (
-                f"execute if score #frame wav2mc matches {_range_spec(midpoint + 1, high)} "
+                f"execute if score #frame {objective} matches {_range_spec(midpoint + 1, high)} "
                 f"run function {namespace}:dispatch/{right_name}"
             ),
         ]
@@ -106,11 +110,21 @@ def build_data_pack(
     loudness_calibration: LoudnessCalibration | None = None,
     progress_callback: ProgressCallback | None = None,
     cancel_check: CancelCheck | None = None,
+    video: VideoFrames | None = None,
 ) -> None:
     calibration = loudness_calibration or LoudnessCalibration()
     calibration.validate()
     function_dir, tag_dir = _layout_directories(layout)
     frame_count = len(frames)
+    playback = playback_metadata(namespace, frame_count)
+    video_data = video_metadata(namespace, video, pack_format) if video is not None else None
+    if video is not None:
+        if frame_count < video.tick_count:
+            raise ValueError("Playback timeline must cover all video frames")
+        playback["commands"].update(video_data["commands"])
+    if any(frame.index != position for position, frame in enumerate(frames)):
+        raise ValueError("frame indices must be contiguous and start at zero")
+    listeners = f"@a[tag={playback['listener_tag']}]"
     stereo = any(
         component.pan != 0.0
         for frame in frames
@@ -143,6 +157,8 @@ def build_data_pack(
                 "bank_namespace": bank_namespace,
                 "frames": frame_count,
                 "tick_rate": 20,
+                "playback": playback,
+                **({"video": video_data} if video_data is not None else {}),
                 "category": category,
                 "channels": 2 if stereo else 1,
                 "stereo_source_offset_blocks": (
@@ -160,6 +176,7 @@ def build_data_pack(
         function_root = root / "data" / namespace / function_dir
         frame_root = function_root / "frame"
         frame_root.mkdir(parents=True, exist_ok=True)
+        sound_events: set[str] = set()
 
         for position, frame in enumerate(frames):
             if position % 32 == 0:
@@ -171,11 +188,17 @@ def build_data_pack(
                     "Writing frame functions",
                 )
             lines = []
+            if (
+                video is not None and position < video.tick_count
+                and position % video.config.ticks_per_frame == 0
+            ):
+                lines.append(f"function {namespace}:video/render")
             for component in frame.components:
                 event = sound_event_name(
                     component.frequency, component.phase_index,
                     component.chirp_rate, component.envelope,
                 )
+                sound_events.add(f"{bank_namespace}:{event}")
                 pitch = "1.0" if component.pitch == 1.0 else f"{component.pitch:.8f}"
                 volume = minecraft_command_volume(
                     component.amplitude,
@@ -183,7 +206,7 @@ def build_data_pack(
                     calibration,
                 )
                 lines.append(
-                    "execute as @a[tag=wav2mc_listener] at @s anchored eyes "
+                    f"execute as {listeners} at @s anchored eyes "
                     "run playsound "
                     f"{bank_namespace}:{event} {category} @s "
                     f"{_sound_coordinates(component.pan)} "
@@ -198,13 +221,14 @@ def build_data_pack(
                     component.shape,
                     component.polarity,
                 )
+                sound_events.add(f"{bank_namespace}:{event}")
                 volume = minecraft_command_volume(
                     component.amplitude,
                     bank_grain_level,
                     calibration,
                 )
                 lines.append(
-                    "execute as @a[tag=wav2mc_listener] at @s anchored eyes "
+                    f"execute as {listeners} at @s anchored eyes "
                     "run playsound "
                     f"{bank_namespace}:{event} {category} @s "
                     f"{_sound_coordinates(component.pan)} "
@@ -218,6 +242,7 @@ def build_data_pack(
             function_root,
             namespace,
             frame_count,
+            str(playback["objective"]),
             cancel_check=cancel_check,
         )
         emit_progress(
@@ -227,68 +252,20 @@ def build_data_pack(
             "Writing dispatch functions",
         )
 
-        _write_text(
-            function_root / "load.mcfunction",
-            "\n".join(
-                [
-                    "scoreboard objectives add wav2mc dummy",
-                    "scoreboard players set #playing wav2mc 0",
-                    "scoreboard players set #frame wav2mc 0",
-                ]
-            ),
+        functions = playback_functions(
+            namespace, frame_count, sound_events, category,
         )
-        _write_text(
-            function_root / "start.mcfunction",
-            "\n".join(
-                [
-                    "tag @a remove wav2mc_listener",
-                    "tag @s add wav2mc_listener",
-                    "scoreboard players set #frame wav2mc 0",
-                    "scoreboard players set #playing wav2mc 1",
-                    f'tellraw @s {{"text":"Playing {namespace}","color":"green"}}',
-                ]
-            ),
-        )
-        _write_text(
-            function_root / "stop.mcfunction",
-            "\n".join(
-                [
-                    "scoreboard players set #playing wav2mc 0",
-                    f"stopsound @a[tag=wav2mc_listener] {category}",
-                    "tag @a remove wav2mc_listener",
-                    "scoreboard players set #frame wav2mc 0",
-                ]
-            ),
-        )
-        _write_text(
-            function_root / "finish.mcfunction",
-            "\n".join(
-                [
-                    "scoreboard players set #playing wav2mc 0",
-                    "scoreboard players set #frame wav2mc 0",
-                    "tag @a remove wav2mc_listener",
-                ]
-            ),
-        )
-        _write_text(
-            function_root / "tick.mcfunction",
-            "\n".join(
-                [
-                    (
-                        f"execute if score #playing wav2mc matches 1 "
-                        f"run function {namespace}:dispatch/root"
-                    ),
-                    (
-                        "execute if score #playing wav2mc matches 1 "
-                        "run scoreboard players add #frame wav2mc 1"
-                    ),
-                    (
-                        f"execute if score #frame wav2mc matches {frame_count}.. "
-                        f"run function {namespace}:finish"
-                    ),
-                ]
-            ),
-        )
+        if video is not None:
+            write_video_functions(
+                function_root, namespace, video, pack_format, functions,
+                progress_callback=scaled_progress(
+                    progress_callback, 0.82, 0.84, "datapack",
+                ),
+                cancel_check=cancel_check,
+            )
+        for name, lines in functions.items():
+            check_cancelled(cancel_check)
+            _write_text(function_root / f"{name}.mcfunction", "\n".join(lines))
 
         minecraft_tags = root / "data" / "minecraft" / tag_dir
         write_json(minecraft_tags / "load.json", {"values": [f"{namespace}:load"]})
@@ -298,8 +275,30 @@ def build_data_pack(
             root / "README.txt",
             (
                 f"Run /function {namespace}:start as a player to begin.\n"
-                f"Run /function {namespace}:stop to stop.\n"
-                "Install and enable the matching wav2mc hybrid resource pack first."
+                f"Run /function {namespace}:start_all for all online players.\n"
+                f"Run /function {namespace}:pause or resume to control playback.\n"
+                f"Run /function {namespace}:join or leave to change listeners.\n"
+                f"Run /function {namespace}:stop to stop and reset.\n"
+                f"Run /function {namespace}:loop_on or loop_off to toggle looping.\n"
+                f"Run /function {namespace}:seek_forward or seek_backward to move 10s.\n"
+                f"Set /scoreboard players set #seek {playback['objective']} <seconds>\n"
+                f"then run /function {namespace}:seek for an absolute position.\n"
+                f"Run /function {namespace}:status for position and state.\n"
+                "Pause and seeking stop only the sound events used by this song.\n"
+                "Other songs sharing the same events may briefly lose those grains.\n"
+                "Install and enable the matching wav2mc hybrid resource pack for audio.\n"
+                + (
+                    (
+                        "Install and enable the generated *_video_resourcepack.zip for this video.\n"
+                        if video_data["requires_resource_pack"] else
+                        "Video needs no additional resource pack.\n"
+                    )
+                    + f"Use /function {namespace}:video/screen_create as a player to place a screen.\n"
+                    f"Use /function {namespace}:video/screen_remove to hide the screen.\n"
+                    "Screens support the Overworld, Nether and End and must stay in loaded chunks.\n"
+                    "Pause freezes the image; stop/reload removes the screen.\n"
+                    if video is not None else ""
+                )
             ),
         )
         check_cancelled(cancel_check)

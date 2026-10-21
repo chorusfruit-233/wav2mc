@@ -141,8 +141,14 @@ def preprocess_audio(
     duration_seconds: float | None = None,
     progress_callback: ProgressCallback | None = None,
     cancel_check: CancelCheck | None = None,
+    preserve_timestamps: bool = False,
 ) -> None:
-    """Decode any FFmpeg-supported input into mono or stereo PCM WAV."""
+    """Decode any FFmpeg-supported input into mono or stereo PCM WAV.
+
+    Video conversions preserve offsets relative to FFmpeg's normalized container
+    origin: delayed audio receives leading silence, matching video start_time=0.
+    Audio-only conversions retain their existing trim-to-first-sample behavior.
+    """
     if audio_stream < 0:
         raise ValueError("audio_stream must not be negative")
     if channels not in (1, 2):
@@ -159,6 +165,8 @@ def preprocess_audio(
     ) as temporary:
         staged_target = Path(temporary.name)
     audio_filter = f"highpass=f={low_frequency},lowpass=f={high_frequency}"
+    if preserve_timestamps:
+        audio_filter = f"aresample=async=1:first_pts=0,{audio_filter}"
     command = [
         ffmpeg,
         "-hide_banner",

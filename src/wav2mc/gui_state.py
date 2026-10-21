@@ -13,10 +13,14 @@ from .config import (
     DEFAULT_DEVICE_PACK_PROFILES,
     DEFAULT_MINECRAFT_VERSION,
     DEFAULT_RESOURCE_PACK_FORMAT,
+    DEFAULT_VIDEO_QUALITY,
     DEVICE_PROFILES,
     AudioConfig,
+    VideoConfig,
     audio_config_metadata,
     device_audio_config,
+    video_quality_name,
+    video_config_for_quality,
 )
 
 
@@ -35,6 +39,40 @@ class GuiSettings:
     psychoacoustic_masking: bool = True
     advanced_open: bool = False
     selected_profiles: tuple[str, ...] = ("normal",)
+    video_enabled: bool = False
+    video_width: int | None = None
+    video_height: int | None = None
+    video_fps: int | None = None
+    video_pixel_size: float | None = None
+    video_stream: int = 0
+    include_audio: bool = True
+    video_quality: str | None = None
+    video_renderer: str = "auto"
+
+    def __post_init__(self) -> None:
+        native = self.video_quality == "native"
+        default = video_config_for_quality("native" if native else DEFAULT_VIDEO_QUALITY)
+        if self.video_fps is None:
+            object.__setattr__(self, "video_fps", default.fps)
+        if not native:
+            for name, value in (
+                ("video_width", default.width), ("video_height", default.height),
+                ("video_pixel_size", default.pixel_size),
+            ):
+                if getattr(self, name) is None:
+                    object.__setattr__(self, name, value)
+        if self.video_quality == "custom":
+            return
+        try:
+            video = VideoConfig(
+                self.video_width, self.video_height, self.video_fps,
+                self.video_pixel_size, renderer=self.video_renderer,
+                native_resolution=native,
+            )
+            quality = video_quality_name(video)
+        except (TypeError, ValueError):
+            quality = DEFAULT_VIDEO_QUALITY
+        object.__setattr__(self, "video_quality", quality)
 
 
 @dataclass(frozen=True)
@@ -83,6 +121,31 @@ def _validated_settings(payload: object) -> GuiSettings:
     advanced_open = payload.get("advanced_open", False)
     if not isinstance(advanced_open, bool):
         advanced_open = False
+    video_enabled = payload.get("video_enabled", False)
+    if not isinstance(video_enabled, bool):
+        video_enabled = False
+    include_audio = payload.get("include_audio", True)
+    if not isinstance(include_audio, bool):
+        include_audio = True
+    native = payload.get("video_quality") == "native"
+    default_video = video_config_for_quality("native" if native else DEFAULT_VIDEO_QUALITY)
+    renderer = payload.get("video_renderer", "auto")
+    if renderer not in ("auto", "pixels", "texture"):
+        renderer = "auto"
+    try:
+        video = VideoConfig(
+            width=payload.get("video_width", default_video.width),
+            height=payload.get("video_height", default_video.height),
+            fps=payload.get("video_fps", default_video.fps),
+            pixel_size=payload.get("video_pixel_size", default_video.pixel_size),
+            renderer=renderer, native_resolution=native,
+        )
+        video.validate()
+    except (TypeError, ValueError):
+        video = video_config_for_quality(DEFAULT_VIDEO_QUALITY)
+    video_stream = payload.get("video_stream", 0)
+    if isinstance(video_stream, bool) or not isinstance(video_stream, int) or video_stream < 0:
+        video_stream = 0
     return GuiSettings(
         last_input_dir=str(payload.get("last_input_dir") or ""),
         output_dir=str(payload.get("output_dir") or "output"),
@@ -95,6 +158,18 @@ def _validated_settings(payload: object) -> GuiSettings:
         psychoacoustic_masking=masking,
         advanced_open=advanced_open,
         selected_profiles=selected or (mode,),
+        video_enabled=video_enabled,
+        video_width=video.width,
+        video_height=video.height,
+        video_fps=video.fps,
+        video_pixel_size=video.pixel_size,
+        video_stream=video_stream,
+        include_audio=include_audio,
+        video_quality=(
+            "native" if video.native_resolution else
+            "custom" if payload.get("video_quality") == "custom" else video_quality_name(video)
+        ),
+        video_renderer=video.renderer,
     )
 
 

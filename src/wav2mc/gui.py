@@ -24,9 +24,14 @@ from .config import (
     DEFAULT_RESOURCE_PACK_FORMAT,
     DEVICE_PROFILES,
     QUALITY_PROFILES,
+    VIDEO_QUALITY_PROFILES,
+    VIDEO_TILE_SIZE,
     AudioConfig,
     LoudnessCalibration,
+    VideoConfig,
     device_audio_config,
+    video_config_for_quality,
+    video_renderer,
 )
 from .gui_state import (
     GuiSettings,
@@ -35,6 +40,8 @@ from .gui_state import (
     save_gui_settings,
 )
 from .pipeline import convert_audio
+from .preview_player import PreviewPlayer
+from .video import VideoInfo, probe_video, resolve_video_config
 from .utils import (
     ProgressCallback, ProgressUpdate, TaskCancelled,
     conversion_output_paths, safe_namespace,
@@ -51,12 +58,31 @@ PACK_STATE_TEXT = {
 }
 STAGE_TEXT = {
     "decode": "解码",
+    "video_decode": "解码视频",
+    "video_resource_pack": "生成视频资源包",
     "analyse": "分析",
     "reconstruct": "重建预览",
     "datapack": "生成数据包",
     "report": "写入报告",
     "resource_pack": "生成资源包",
     "compress": "压缩",
+}
+GAME_COMMAND_LABELS = {
+    "start": "开始播放",
+    "pause": "暂停",
+    "resume": "继续播放",
+    "stop": "停止",
+    "seek_forward": "前进 10 秒",
+    "seek_backward": "后退 10 秒",
+    "loop_on": "开启循环",
+    "loop_off": "关闭循环",
+    "status": "查看播放进度",
+    "join": "加入收听",
+    "leave": "退出收听",
+    "start_all": "为所有在线玩家播放",
+    "help": "查看播放帮助",
+    "screen_create": "放置 / 重建屏幕",
+    "screen_remove": "移除屏幕",
 }
 
 
@@ -214,9 +240,25 @@ def mode_summary(mode: str) -> str:
     )
 
 
-def result_function_command(report: Mapping[str, object]) -> str:
+def result_function_commands(report: Mapping[str, object]) -> dict[str, str]:
+    playback = report.get("playback")
+    commands = playback.get("commands") if isinstance(playback, Mapping) else None
+    if isinstance(commands, Mapping):
+        return {
+            action: command
+            for action in GAME_COMMAND_LABELS
+            if isinstance(command := commands.get(action), str)
+            and command.startswith("/function ")
+        }
     namespace = safe_namespace(str(report.get("song_namespace") or "song"))
-    return f"/function {namespace}:start"
+    return {"start": f"/function {namespace}:start"}
+
+
+def result_function_command(report: Mapping[str, object], action: str = "start") -> str:
+    commands = result_function_commands(report)
+    if action not in commands:
+        raise ValueError("此数据包没有提供该播放命令，请重新转换音频。")
+    return commands[action]
 
 
 def _format_duration(seconds: float | None) -> str:
@@ -254,12 +296,19 @@ class Wav2McApp:
         self.event_queue: queue.Queue[tuple[object, ...]] = queue.Queue()
         self.probe_generation = 0
         self.media_info: MediaInfo | None = None
+        self.media_info_path: Path | None = None
+        self.video_info: VideoInfo | None = None
+        self.video_info_path: Path | None = None
         self.last_outputs: Mapping[str, Path] | None = None
         self.last_report: Mapping[str, object] | None = None
         self.task_success_callback: Callable[[object], None] | None = None
         self.active_button: ttk.Button | None = None
         self.active_button_idle_text = ""
         self.details_open = False
+        self.preview_player = PreviewPlayer()
+        self.preview_after: str | None = None
+        self.preview_dragging = False
+        self.preview_error: str | None = None
 
         input_value = str(initial_input) if initial_input else ""
         output_value = (
@@ -285,6 +334,22 @@ class Wav2McApp:
             value=self.settings.psychoacoustic_masking
         )
         self.stereo_var = tk.BooleanVar(value=self.settings.preserve_stereo)
+        self.applying_video_quality = False
+        self.video_enabled_var = tk.BooleanVar(value=self.settings.video_enabled)
+        self.video_quality_var = tk.StringVar(value=self.settings.video_quality)
+        self.video_quality_display_var = tk.StringVar(
+            value=self._video_quality_label(self.settings.video_quality)
+        )
+        self.video_width_var = tk.StringVar(value=str(self.settings.video_width) if self.settings.video_width is not None else "跟随源视频")
+        self.video_height_var = tk.StringVar(value=str(self.settings.video_height) if self.settings.video_height is not None else "跟随源视频")
+        self.video_fps_var = tk.StringVar(value=str(self.settings.video_fps))
+        self.video_pixel_size_var = tk.StringVar(value=str(self.settings.video_pixel_size) if self.settings.video_pixel_size is not None else "自动")
+        self.video_renderer_var = tk.StringVar(value=self.settings.video_renderer)
+        self.video_renderer_display_var = tk.StringVar(value={"auto": "自动", "pixels": "逐像素", "texture": "纹理分块"}[self.settings.video_renderer])
+        self.video_stream_var = tk.StringVar(value=str(self.settings.video_stream))
+        self.include_audio_var = tk.BooleanVar(value=self.settings.include_audio)
+        self.video_summary_var = tk.StringVar()
+        self.result_video_var = tk.StringVar()
         self.advanced_open = self.settings.advanced_open
         self.bank_output_var = tk.StringVar(value=self.settings.bank_output_dir)
         self.profile_vars = {
@@ -305,6 +370,8 @@ class Wav2McApp:
         self.progress_var = tk.DoubleVar(value=0.0)
         self.result_summary_var = tk.StringVar()
         self.result_pack_var = tk.StringVar()
+        self.preview_position_var = tk.DoubleVar(value=0.0)
+        self.preview_time_var = tk.StringVar(value="0:00.0 / 0:00.0")
 
         self._configure_window()
         self._configure_styles()
@@ -313,6 +380,14 @@ class Wav2McApp:
         self.stereo_var.trace_add("write", self._update_mode_summary)
         self.gain_db_var.trace_add("write", self._update_gain_text)
         self.bank_output_var.trace_add("write", self._bank_path_changed)
+        self.video_quality_var.trace_add("write", self._video_quality_changed)
+        for variable in (self.video_width_var, self.video_height_var, self.video_fps_var):
+            variable.trace_add("write", self._video_dimensions_changed)
+        for variable in (self.video_enabled_var, self.video_pixel_size_var):
+            variable.trace_add("write", self._update_video_controls)
+        self.video_renderer_var.trace_add("write", self._update_video_controls)
+        self.video_stream_var.trace_add("write", self._video_stream_changed)
+        self._update_video_controls()
         self._update_mode_summary()
         self._update_gain_text()
         self._refresh_pack_statuses()
@@ -325,7 +400,7 @@ class Wav2McApp:
             self.root.after(20, lambda: self._begin_probe(initial_input))
 
     def _configure_window(self) -> None:
-        self.root.title("wav2mc - Minecraft 音频转换器")
+        self.root.title("wav2mc - Minecraft 音视频转换器")
         self.root.geometry("960x720")
         self.root.minsize(820, 640)
         self.root.configure(background="#eef1ee")
@@ -519,7 +594,7 @@ class Wav2McApp:
         left.grid(row=0, column=0, sticky="nsew")
         left.columnconfigure(1, weight=1)
         self._section_heading(left, "输入与输出", 0)
-        ttk.Label(left, text="音频文件", style="Surface.TLabel").grid(
+        ttk.Label(left, text="媒体文件", style="Surface.TLabel").grid(
             row=2, column=0, sticky="w", pady=4
         )
         self.input_entry = ttk.Entry(left, textvariable=self.input_var)
@@ -571,6 +646,88 @@ class Wav2McApp:
             command=lambda: self._choose_directory(self.output_var),
         ).grid(row=6, column=2, pady=4)
         _ToolTip(output_entry, self.output_var.get)
+
+        self._section_heading(left, "视频", 8)
+        ttk.Checkbutton(
+            left,
+            text="视频（展示实体）",
+            variable=self.video_enabled_var,
+        ).grid(row=10, column=0, columnspan=3, sticky="w", pady=(2, 5))
+        video_options = ttk.Frame(left, style="Surface.TFrame")
+        video_options.grid(row=11, column=0, columnspan=3, sticky="ew")
+        self.video_widgets: list[tuple[ttk.Widget, str]] = []
+        ttk.Label(video_options, text="画质", style="Surface.TLabel").grid(
+            row=0, column=0, sticky="w", pady=3,
+        )
+        quality_box = ttk.Combobox(
+            video_options, textvariable=self.video_quality_display_var,
+            values=tuple(profile.label for profile in VIDEO_QUALITY_PROFILES.values()) + ("自定义",),
+            state="readonly", width=9,
+        )
+        quality_box.grid(row=0, column=1, columnspan=3, sticky="w", padx=(8, 2), pady=3)
+        quality_box.bind("<<ComboboxSelected>>", self._select_video_quality)
+        ttk.Label(video_options, text="分辨率", style="Surface.TLabel").grid(
+            row=1, column=0, sticky="w", pady=3
+        )
+        width_box = ttk.Spinbox(
+            video_options, textvariable=self.video_width_var,
+            from_=1, to=16384, width=7,
+        )
+        width_box.grid(row=1, column=1, padx=(8, 2), pady=3)
+        ttk.Label(video_options, text="×", style="Surface.TLabel").grid(row=1, column=2)
+        height_box = ttk.Spinbox(
+            video_options, textvariable=self.video_height_var,
+            from_=1, to=16384, width=7,
+        )
+        height_box.grid(row=1, column=3, padx=(2, 8), pady=3)
+        fps_box = ttk.Combobox(
+            video_options, textvariable=self.video_fps_var,
+            values=(1, 2, 4, 5, 10, 20), width=4, state="readonly",
+        )
+        fps_box.grid(row=1, column=4, pady=3)
+        ttk.Label(video_options, text="fps", style="Surface.TLabel").grid(
+            row=1, column=5, padx=(3, 0)
+        )
+        ttk.Label(video_options, text="像素边长", style="Surface.TLabel").grid(
+            row=2, column=0, sticky="w", pady=3
+        )
+        pixel_box = ttk.Spinbox(
+            video_options, textvariable=self.video_pixel_size_var,
+            from_=0.000001, to=2.0, increment=0.001, width=7,
+        )
+        pixel_box.grid(row=2, column=1, padx=(8, 2), pady=3)
+        ttk.Label(video_options, text="格", style="Surface.TLabel").grid(row=2, column=2)
+        ttk.Label(video_options, text="视频流", style="Surface.TLabel").grid(
+            row=2, column=3, padx=(4, 0)
+        )
+        stream_box = ttk.Spinbox(
+            video_options, textvariable=self.video_stream_var,
+            from_=0, to=99, width=4,
+        )
+        stream_box.grid(row=2, column=4, pady=3)
+        audio_box = ttk.Checkbutton(
+            video_options, text="保留音频", variable=self.include_audio_var,
+        )
+        ttk.Label(video_options, text="渲染", style="Surface.TLabel").grid(row=3, column=0, sticky="w", pady=3)
+        renderer_box = ttk.Combobox(
+            video_options, textvariable=self.video_renderer_display_var,
+            values=("自动", "逐像素", "纹理分块"), state="readonly", width=9,
+        )
+        renderer_box.grid(row=3, column=1, columnspan=3, sticky="w", padx=(8, 2), pady=3)
+        renderer_box.bind("<<ComboboxSelected>>", self._select_video_renderer)
+        audio_box.grid(row=4, column=0, columnspan=6, sticky="w", pady=3)
+        self.video_dimension_widgets = (width_box, height_box)
+        self.video_widgets.extend((
+            (quality_box, "readonly"),
+            (width_box, tk.NORMAL), (height_box, tk.NORMAL),
+            (fps_box, "readonly"), (pixel_box, tk.NORMAL),
+            (stream_box, tk.NORMAL), (audio_box, tk.NORMAL),
+            (renderer_box, "readonly"),
+        ))
+        ttk.Label(
+            left, textvariable=self.video_summary_var,
+            style="MetaMuted.TLabel", wraplength=320,
+        ).grid(row=12, column=0, columnspan=3, sticky="w", pady=(4, 0))
 
         right = ttk.Frame(workspace, style="Surface.TFrame")
         right.grid(row=0, column=2, sticky="nsew")
@@ -745,15 +902,15 @@ class Wav2McApp:
         )
         self.pack_jump_button.grid(row=0, column=2, sticky="w", padx=(2, 0))
         _ToolTip(self.pack_jump_button, lambda: "生成匹配资源包")
-        preview_button = ttk.Button(
+        self.preview_play_button = ttk.Button(
             self.result_frame,
             text="试听",
             width=4,
             style="Result.TButton",
             command=self._play_preview,
         )
-        preview_button.grid(row=0, column=3, padx=(2, 0))
-        _ToolTip(preview_button, lambda: "试听预览")
+        self.preview_play_button.grid(row=0, column=3, padx=(2, 0))
+        _ToolTip(self.preview_play_button, lambda: "试听 / 暂停本地音轨预览，视频画面在 Minecraft 中播放")
         directory_button = ttk.Button(
             self.result_frame,
             text="目录",
@@ -763,15 +920,17 @@ class Wav2McApp:
         )
         directory_button.grid(row=0, column=4, padx=(2, 0))
         _ToolTip(directory_button, lambda: "打开输出目录")
-        copy_button = ttk.Button(
+        copy_button = ttk.Menubutton(
             self.result_frame,
-            text="复制",
-            width=4,
+            text="命令 ▾",
+            width=6,
             style="Result.TButton",
-            command=self._copy_result_command,
         )
+        self.command_menu = tk.Menu(copy_button, tearoff=False)
+        copy_button.configure(menu=self.command_menu)
+        self._refresh_command_menu()
         copy_button.grid(row=0, column=5, padx=(2, 0))
-        _ToolTip(copy_button, lambda: "复制 /function <namespace>:start")
+        _ToolTip(copy_button, lambda: "复制游戏内播放命令，在 Minecraft 中执行")
         ttk.Button(
             self.result_frame,
             text="×",
@@ -779,6 +938,48 @@ class Wav2McApp:
             style="Result.TButton",
             command=self._dismiss_result,
         ).grid(row=0, column=6, sticky="e", padx=(2, 0))
+        preview_controls = ttk.Frame(self.result_frame, style="Surface.TFrame")
+        preview_controls.grid(row=1, column=0, columnspan=7, sticky="ew", pady=(3, 1))
+        preview_controls.columnconfigure(1, weight=1)
+        self.preview_stop_button = ttk.Button(
+            preview_controls,
+            text="停止试听",
+            width=8,
+            style="Result.TButton",
+            command=self._stop_preview,
+        )
+        self.preview_stop_button.grid(row=0, column=0, padx=(0, 5))
+        self.preview_seek = ttk.Scale(
+            preview_controls,
+            variable=self.preview_position_var,
+            from_=0.0,
+            to=1.0,
+            command=self._preview_seek_changed,
+        )
+        self.preview_seek.grid(row=0, column=1, sticky="ew")
+        self.preview_seek.bind("<ButtonPress-1>", self._begin_preview_seek)
+        self.preview_seek.bind("<ButtonRelease-1>", self._commit_preview_seek)
+        self.preview_seek.bind("<KeyRelease>", self._commit_preview_seek)
+        ttk.Label(
+            preview_controls,
+            textvariable=self.preview_time_var,
+            style="MetaMuted.TLabel",
+        ).grid(row=0, column=2, padx=5)
+        ttk.Button(
+            preview_controls,
+            text="系统播放器",
+            style="Result.TButton",
+            command=self._open_external_preview,
+        ).grid(row=0, column=3)
+        self._update_preview_controls()
+        self.result_video_label = ttk.Label(
+            self.result_frame, textvariable=self.result_video_var,
+            style="MetaMuted.TLabel",
+        )
+        self.result_video_label.grid(
+            row=2, column=0, columnspan=7, sticky="w", pady=(2, 0),
+        )
+        self.result_video_label.grid_remove()
         self.result_frame.grid_remove()
 
     def _build_bank_tab(self, tab: ttk.Frame) -> None:
@@ -881,13 +1082,13 @@ class Wav2McApp:
             initial_dir = Path.cwd()
         selected = filedialog.askopenfilename(
             parent=self.root,
-            title="选择音频或媒体文件",
+            title="选择音频或视频文件",
             initialdir=str(initial_dir),
             filetypes=(
                 (
-                    "音频与媒体",
+                    "音频与视频",
                     "*.wav *.mp3 *.flac *.m4a *.m4s *.aac *.ogg "
-                    "*.opus *.aiff *.mp4 *.mkv *.webm",
+                    "*.opus *.aiff *.mp4 *.mkv *.webm *.mov *.avi *.mpeg *.mpg *.gif",
                 ),
                 ("所有文件", "*"),
             ),
@@ -922,29 +1123,91 @@ class Wav2McApp:
         self.probe_generation += 1
         generation = self.probe_generation
         self.media_info = None
+        self.media_info_path = None
+        self.video_info = None
+        self.video_info_path = None
         self.media_info_var.set("正在探测…")
         self.audio_stream_var.set(0)
         self.stream_display_var.set("0 · 默认音轨")
-        self.stream_box.configure(values=("0 · 默认音轨",))
+        self.stream_box.configure(values=("0 · 默认音轨",), state="readonly")
+        self._update_video_controls()
+        try:
+            video_stream = int(self.video_stream_var.get())
+        except (tk.TclError, ValueError):
+            video_stream = 0
 
         def runner() -> None:
+            video = None
             try:
-                info = probe_media(path)
+                try:
+                    info = probe_media(path)
+                except RuntimeError as exc:
+                    if not str(exc).startswith("No audio stream found"):
+                        raise
+                    video = probe_video(path) if video_stream == 0 else probe_video(path, video_stream)
+                    info = MediaInfo(duration=video.duration, format_name="video", streams=())
             except Exception as exc:
                 self.event_queue.put(("probe_error", generation, path, exc))
             else:
                 self.event_queue.put(("probe_success", generation, path, info))
+                if video is None:
+                    try:
+                        video = probe_video(path) if video_stream == 0 else probe_video(path, video_stream)
+                    except (OSError, RuntimeError, ValueError):
+                        pass
+                if video is not None:
+                    self.event_queue.put(("video_probe_success", generation, path, video, video_stream))
 
-        threading.Thread(
-            target=runner,
-            name="wav2mc-media-probe",
-            daemon=True,
-        ).start()
+        threading.Thread(target=runner, name="wav2mc-media-probe", daemon=True).start()
+
+    def _video_stream_changed(self, *_args: object) -> None:
+        self.video_info = None
+        self.video_info_path = None
+        self._update_video_controls()
+        path = Path(self.input_var.get()).expanduser()
+        if not path.is_file():
+            return
+        try:
+            stream = int(self.video_stream_var.get())
+            if stream < 0:
+                return
+        except (tk.TclError, ValueError):
+            return
+        generation = self.probe_generation
+
+        def runner() -> None:
+            try:
+                info = probe_video(path) if stream == 0 else probe_video(path, stream)
+            except (OSError, RuntimeError, ValueError):
+                return
+            self.event_queue.put(("video_probe_success", generation, path, info, stream))
+
+        threading.Thread(target=runner, name="wav2mc-video-probe", daemon=True).start()
+
+    def _video_probe_succeeded(
+        self, generation: int, path: Path, info: VideoInfo, stream: int = 0,
+    ) -> None:
+        try:
+            current_stream = int(self.video_stream_var.get())
+        except (tk.TclError, ValueError):
+            return
+        if generation != self.probe_generation or self.input_var.get() != str(path) or stream != current_stream:
+            return
+        self.video_info = info
+        self.video_info_path = path
+        self._update_video_controls()
 
     def _probe_succeeded(self, generation: int, path: Path, info: MediaInfo) -> None:
         if generation != self.probe_generation or self.input_var.get() != str(path):
             return
         self.media_info = info
+        self.media_info_path = path
+        if not info.streams:
+            self.audio_stream_var.set(0)
+            self.stream_display_var.set("无音轨")
+            self.stream_box.configure(values=(), state=tk.DISABLED)
+            self._update_silent_media_description()
+            return
         stream = info.streams[0]
         self.media_info_var.set(
             f"{_format_duration(info.duration)} · {stream.codec.upper()} · "
@@ -955,7 +1218,7 @@ class Wav2McApp:
             f"{item.sample_rate:,} Hz · {item.channels} 声道"
             for item in info.streams
         )
-        self.stream_box.configure(values=values)
+        self.stream_box.configure(values=values, state="readonly")
         self.stream_display_var.set(values[0])
         self.audio_stream_var.set(0)
 
@@ -964,6 +1227,147 @@ class Wav2McApp:
             return
         self.media_info_var.set("探测失败 · 使用音轨 0")
         self._append_log(f"媒体探测失败：{error}")
+
+    def _update_silent_media_description(self) -> None:
+        if self.media_info is None or self.media_info.streams:
+            return
+        action = "无声视频" if self.video_enabled_var.get() else "启用视频转换"
+        self.media_info_var.set(
+            f"{_format_duration(self.media_info.duration)} · 无音轨 · {action}"
+        )
+
+    def _video_config(self) -> VideoConfig | None:
+        if not self.video_enabled_var.get():
+            return None
+        native = self.video_quality_var.get() == "native"
+        pixel_text = self.video_pixel_size_var.get().strip()
+        config = VideoConfig(
+            width=None if native else int(self.video_width_var.get()),
+            height=None if native else int(self.video_height_var.get()),
+            fps=int(self.video_fps_var.get()),
+            pixel_size=None if native and pixel_text in ("", "自动", "None") else float(pixel_text),
+            renderer=self.video_renderer_var.get(), native_resolution=native,
+        )
+        config.validate()
+        return config
+
+    @staticmethod
+    def _video_quality_label(quality: str | None) -> str:
+        profile = VIDEO_QUALITY_PROFILES.get(quality)
+        return profile.label if profile is not None else "自定义"
+
+    def _select_video_quality(self, _event: tk.Event[tk.Misc]) -> None:
+        selected = self.video_quality_display_var.get()
+        quality = next(
+            (name for name, profile in VIDEO_QUALITY_PROFILES.items() if profile.label == selected),
+            "custom",
+        )
+        self.video_quality_var.set(quality)
+
+    def _select_video_renderer(self, _event: tk.Event[tk.Misc]) -> None:
+        renderer = {"自动": "auto", "逐像素": "pixels", "纹理分块": "texture"}.get(
+            self.video_renderer_display_var.get(), "auto",
+        )
+        self.video_renderer_var.set(renderer)
+
+    def _video_quality_changed(self, *_args: object) -> None:
+        quality = self.video_quality_var.get()
+        self.video_quality_display_var.set(self._video_quality_label(quality))
+        if self.applying_video_quality:
+            return
+        self.applying_video_quality = True
+        try:
+            if quality in VIDEO_QUALITY_PROFILES:
+                config = video_config_for_quality(quality)
+                self.video_width_var.set(str(config.width) if config.width is not None else "跟随源视频")
+                self.video_height_var.set(str(config.height) if config.height is not None else "跟随源视频")
+                self.video_fps_var.set(str(config.fps))
+                self.video_pixel_size_var.set(str(config.pixel_size) if config.pixel_size is not None else "自动")
+            elif quality == "custom":
+                try:
+                    int(self.video_width_var.get())
+                    int(self.video_height_var.get())
+                except (tk.TclError, ValueError):
+                    default = video_config_for_quality()
+                    current = self.video_info if self.video_info_path == Path(self.input_var.get()).expanduser() else None
+                    self.video_width_var.set(str(current.display_width if current else default.width))
+                    self.video_height_var.set(str(current.display_height if current else default.height))
+                if self.video_pixel_size_var.get() in ("", "自动", "None"):
+                    self.video_pixel_size_var.set(str(3.2 / int(self.video_width_var.get())))
+        finally:
+            self.applying_video_quality = False
+        self._update_video_controls()
+
+    def _video_dimensions_changed(self, *_args: object) -> None:
+        if self.applying_video_quality:
+            return
+        profile = VIDEO_QUALITY_PROFILES.get(self.video_quality_var.get())
+        if profile is not None and profile.name != "native":
+            try:
+                dimensions = (
+                    int(self.video_width_var.get()), int(self.video_height_var.get()),
+                    int(self.video_fps_var.get()),
+                )
+            except (tk.TclError, ValueError):
+                dimensions = None
+            if dimensions != (profile.width, profile.height, profile.fps):
+                self.video_quality_var.set("custom")
+        self._update_video_controls()
+
+    def _update_video_controls(self, *_args: object) -> None:
+        if self.applying_video_quality:
+            return
+        enabled = self.video_enabled_var.get()
+        native = self.video_quality_var.get() == "native"
+        self._update_silent_media_description()
+        for widget, normal_state in self.video_widgets:
+            widget.configure(state=normal_state if enabled else tk.DISABLED)
+        for widget in self.video_dimension_widgets:
+            widget.configure(state=tk.DISABLED if native or not enabled else tk.NORMAL)
+        self.video_renderer_display_var.set({"auto": "自动", "pixels": "逐像素", "texture": "纹理分块"}.get(self.video_renderer_var.get(), "自动"))
+        if not enabled:
+            self.video_summary_var.set("开启后生成展示实体屏幕，高分辨率输出配套视频资源包。")
+            return
+        try:
+            config = self._video_config()
+            assert config is not None
+            if native:
+                self.applying_video_quality = True
+                try:
+                    valid_info = self.video_info is not None and self.video_info_path == Path(self.input_var.get()).expanduser()
+                    self.video_width_var.set(str(self.video_info.display_width) if valid_info else "跟随源视频")
+                    self.video_height_var.set(str(self.video_info.display_height) if valid_info else "跟随源视频")
+                finally:
+                    self.applying_video_quality = False
+                if not valid_info:
+                    self.video_summary_var.set(
+                        "原分辨率 · 跟随源视频，读取后显示尺寸与负载\n"
+                        "纹理分块 · 需启用生成的视频资源包"
+                    )
+                    return
+                config = resolve_video_config(config, self.video_info)
+            assert config.width is not None and config.height is not None and config.pixel_size is not None
+            renderer = video_renderer(config)
+            pixels = config.width * config.height
+            count = pixels if renderer == "pixels" else math.ceil(config.width / VIDEO_TILE_SIZE) * math.ceil(config.height / VIDEO_TILE_SIZE)
+            renderer_text = "逐像素" if renderer == "pixels" else "纹理分块 · 需视频资源包"
+            memory = ""
+            duration = (
+                self.video_info.duration
+                if self.video_info is not None
+                and self.video_info_path == Path(self.input_var.get()).expanduser()
+                else None
+            )
+            if renderer == "texture" and duration:
+                mib = math.ceil(duration * config.fps) * count * VIDEO_TILE_SIZE ** 2 * 4 / 1024 ** 2
+                memory = f" · 图集约 {mib:g} MiB"
+            self.video_summary_var.set(
+                f"{self._video_quality_label(self.video_quality_var.get())} · {config.width}×{config.height} · {count:,} 个显示实体\n"
+                f"{count * config.fps:,} 次更新/秒 · {renderer_text}{memory}\n"
+                f"{config.width * config.pixel_size:g} × {config.height * config.pixel_height:g} 格屏幕"
+            )
+        except (tk.TclError, ValueError, TypeError):
+            self.video_summary_var.set("视频参数无效；逐像素模式最多 4096 个实体，可改用纹理分块。")
 
     def _stream_selected(self, _event: tk.Event[tk.Misc]) -> None:
         value = self.stream_display_var.get().partition("·")[0].strip()
@@ -1017,6 +1421,13 @@ class Wav2McApp:
         if not source.is_file():
             self.convert_error_var.set("请选择存在的音频或媒体文件。")
             return
+        if (
+            self.media_info is not None and self.media_info_path == source
+            and not self.media_info.streams
+            and not self.video_enabled_var.get()
+        ):
+            self.convert_error_var.set("此媒体没有音轨，请开启视频（展示实体）转换。")
+            return
         output_text = self.output_var.get().strip()
         if not output_text:
             self.convert_error_var.set("请选择输出目录。")
@@ -1028,6 +1439,13 @@ class Wav2McApp:
             gain_db = float(self.gain_db_var.get())
             mode = self.mode_var.get()
             config = mode_audio_config(mode)
+            video_config = self._video_config()
+            if (
+                video_config is not None and video_config.native_resolution
+                and self.video_info is not None and self.video_info_path == source
+            ):
+                resolve_video_config(video_config, self.video_info)
+            video_stream = int(self.video_stream_var.get()) if video_config else 0
         except (tk.TclError, ValueError) as exc:
             self.convert_error_var.set(f"参数无效：{exc}")
             return
@@ -1037,8 +1455,14 @@ class Wav2McApp:
         if stream < 0:
             self.convert_error_var.set("音轨索引不能为负数。")
             return
+        if video_stream < 0:
+            self.convert_error_var.set("视频流索引不能为负数。")
+            return
 
-        targets = conversion_output_paths(output_dir, song_name)
+        targets = conversion_output_paths(
+            output_dir, song_name,
+            include_video_resource_pack=video_config is not None and video_renderer(video_config) == "texture",
+        )
         existing = [path for path in targets.values() if path.exists()]
         if existing and not messagebox.askyesno(
             "覆盖输出",
@@ -1052,6 +1476,7 @@ class Wav2McApp:
         gain = gain_multiplier_from_db(gain_db)
         masking = self.masking_var.get()
         preserve_stereo = self.stereo_var.get()
+        include_audio = self.include_audio_var.get() if video_config else True
         preview_bank = inspect_device_pack(
             Path(self.bank_output_var.get() or "output/device_banks").expanduser(), mode,
         )
@@ -1080,8 +1505,12 @@ class Wav2McApp:
                 preview_resource_pack=preview_bank.path if preview_bank.state == "valid" else None,
                 progress_callback=progress_callback,
                 cancel_check=cancel_check,
+                video_config=video_config,
+                video_stream=video_stream,
+                include_audio=include_audio,
             )
 
+        self._stop_preview()
         self._persist_settings()
         self.result_frame.grid_remove()
         self.convert_action_row.grid()
@@ -1099,8 +1528,15 @@ class Wav2McApp:
             raise TypeError("Conversion returned invalid outputs")
         typed_outputs = {str(key): Path(value) for key, value in outputs.items()}
         report = json.loads(typed_outputs["report"].read_text(encoding="utf-8"))
+        self._stop_preview()
         self.last_outputs = typed_outputs
         self.last_report = report
+        self._refresh_command_menu()
+        try:
+            self.preview_player.load(typed_outputs["preview"])
+        except (OSError, ValueError, RuntimeError) as exc:
+            self._append_log(f"无法读取试听文件：{exc}")
+        self._update_preview_controls()
         duration = float(report.get("input_duration_seconds", 0.0))
         channels = int(report.get("output_channels", 1))
         peak = float(report.get("preview_peak", 0.0))
@@ -1109,6 +1545,22 @@ class Wav2McApp:
             f"{_format_duration(duration)} · {channels}ch · "
             f"峰{peak:.3f} · {commands:,}条"
         )
+        video = report.get("video")
+        if isinstance(video, Mapping):
+            width = video.get("width", "?")
+            height = video.get("height", "?")
+            fps = video.get("fps", "?")
+            quality = video.get("quality")
+            quality_label = self._video_quality_label(quality) if isinstance(quality, str) else ""
+            self.result_video_var.set(
+                f"视频 {quality_label + ' · ' if quality_label else ''}{width}×{height} · {fps} fps · "
+                + ("需启用视频资源包；" if video.get("requires_resource_pack") else "")
+                + "在 Minecraft 中查看；本地试听仅播放音轨"
+            )
+            self.result_video_label.grid()
+        else:
+            self.result_video_var.set("")
+            self.result_video_label.grid_remove()
         required = report.get("required_resource_pack")
         profile = required.get("device_profile") if isinstance(required, Mapping) else None
         if isinstance(profile, str) and profile in DEFAULT_DEVICE_PACK_PROFILES:
@@ -1123,7 +1575,11 @@ class Wav2McApp:
             else:
                 self.pack_jump_button.grid()
         else:
-            self.result_pack_var.set("所需资源包参数见分析报告")
+            self.result_pack_var.set(
+                ("无声视频 · 需视频资源包" if video.get("requires_resource_pack") else "无声视频 · 无需资源包")
+                if isinstance(video, Mapping) and report.get("audio_enabled") is False
+                else "所需资源包参数见分析报告"
+            )
             self.pack_jump_button.grid_remove()
         self.convert_action_row.grid_remove()
         self.result_frame.grid()
@@ -1265,6 +1721,8 @@ class Wav2McApp:
                 self._probe_succeeded(
                     event[1], event[2], event[3]  # type: ignore[arg-type]
                 )
+            elif kind == "video_probe_success":
+                self._video_probe_succeeded(*event[1:])  # type: ignore[arg-type]
             elif kind == "probe_error":
                 self._probe_failed(
                     event[1], event[2], event[3]  # type: ignore[arg-type]
@@ -1375,6 +1833,7 @@ class Wav2McApp:
             self.pack_jump_button.grid()
 
     def _dismiss_result(self) -> None:
+        self._stop_preview()
         self.result_frame.grid_remove()
         self.convert_action_row.grid()
 
@@ -1388,17 +1847,121 @@ class Wav2McApp:
         self.notebook.select(self.bank_tab)
 
     def _play_preview(self) -> None:
+        if self.last_outputs is None or "preview" not in self.last_outputs:
+            return
+        if not self.preview_player.available:
+            self._open_external_preview()
+            self.status_var.set("未找到 ffplay，已用系统播放器试听；暂停和跳转请在播放器中操作。")
+            return
+        try:
+            path = Path(self.last_outputs["preview"]).expanduser().resolve()
+            if self.preview_player.path != path:
+                self.preview_player.load(path)
+            if self.preview_player.state == "playing":
+                self.preview_player.pause()
+            else:
+                self.preview_player.play()
+        except (OSError, ValueError, RuntimeError) as exc:
+            self._append_log(f"无法试听：{exc}")
+            self.status_var.set("试听失败，可尝试系统播放器。")
+            self._set_details(True)
+        self._poll_preview()
+
+    def _open_external_preview(self) -> None:
+        self._stop_preview()
         if self.last_outputs is not None and "preview" in self.last_outputs:
             self._open_path(Path(self.last_outputs["preview"]), False)
+
+    def _stop_preview(self) -> None:
+        if self.preview_after is not None:
+            self.root.after_cancel(self.preview_after)
+            self.preview_after = None
+        self.preview_player.stop()
+        self.preview_dragging = False
+        self._update_preview_controls()
+
+    def _update_preview_controls(self) -> None:
+        player = self.preview_player
+        self.preview_play_button.configure(
+            text="暂停" if player.state == "playing" else (
+                "继续" if player.state == "paused" else "试听"
+            ),
+        )
+        enabled = player.available and player.path is not None
+        state = tk.NORMAL if enabled else tk.DISABLED
+        self.preview_stop_button.configure(state=state)
+        self.preview_seek.configure(to=max(0.001, player.duration), state=state)
+        if not self.preview_dragging:
+            self.preview_position_var.set(player.position)
+            self.preview_time_var.set(
+                f"{_format_duration(player.position)} / {_format_duration(player.duration)}"
+            )
+
+    def _poll_preview(self) -> None:
+        if self.preview_after is not None:
+            self.root.after_cancel(self.preview_after)
+            self.preview_after = None
+        if self.destroyed:
+            return
+        self.preview_player.poll()
+        error = self.preview_player.error
+        if error and error != self.preview_error:
+            self.preview_error = error
+            self._append_log(error)
+            self.status_var.set("试听失败，请检查音频设备或使用系统播放器。")
+            self._set_details(True)
+        elif not error:
+            self.preview_error = None
+        self._update_preview_controls()
+        if self.preview_player.state == "playing":
+            self.preview_after = self.root.after(100, self._poll_preview)
+
+    def _begin_preview_seek(self, _event: tk.Event[tk.Misc]) -> None:
+        self.preview_dragging = True
+
+    def _preview_seek_changed(self, _value: str) -> None:
+        if self.preview_dragging:
+            self.preview_time_var.set(
+                f"{_format_duration(self.preview_position_var.get())} / "
+                f"{_format_duration(self.preview_player.duration)}"
+            )
+
+    def _commit_preview_seek(self, event: tk.Event[tk.Misc]) -> None:
+        if event.type == tk.EventType.KeyRelease and event.keysym not in {
+            "Left", "Right", "Up", "Down", "Home", "End", "Prior", "Next",
+        }:
+            return
+        self.preview_dragging = False
+        if not self.preview_player.available or self.preview_player.path is None:
+            return
+        try:
+            self.preview_player.seek(self.preview_position_var.get())
+        except (OSError, ValueError, RuntimeError) as exc:
+            self._append_log(f"无法跳转试听位置：{exc}")
+            self.status_var.set("试听跳转失败，可尝试系统播放器。")
+        self._poll_preview()
 
     def _open_result_directory(self) -> None:
         if self.last_outputs:
             self._open_path(Path(next(iter(self.last_outputs.values()))).parent, True)
 
-    def _copy_result_command(self) -> None:
+    def _refresh_command_menu(self) -> None:
+        self.command_menu.delete(0, tk.END)
+        commands = result_function_commands(self.last_report or {})
+        for action in commands:
+            self.command_menu.add_command(
+                label=GAME_COMMAND_LABELS[action],
+                command=lambda selected=action: self._copy_result_command(selected),
+            )
+
+    def _copy_result_command(self, action: str = "start") -> None:
         if self.last_report is None:
             return
-        command = result_function_command(self.last_report)
+        try:
+            command = result_function_command(self.last_report, action)
+        except ValueError as exc:
+            self.status_var.set(str(exc))
+            return
         self.root.clipboard_clear()
         self.root.clipboard_append(command)
         self.root.update_idletasks()
@@ -1433,6 +1996,23 @@ class Wav2McApp:
             gain = float(self.gain_db_var.get())
         except (tk.TclError, ValueError):
             gain = 0.0
+        try:
+            native = self.video_quality_var.get() == "native"
+            pixel = self.video_pixel_size_var.get().strip()
+            video = VideoConfig(
+                width=None if native else int(self.video_width_var.get()),
+                height=None if native else int(self.video_height_var.get()),
+                fps=int(self.video_fps_var.get()),
+                pixel_size=None if native and pixel in ("", "自动", "None") else float(pixel),
+                renderer=self.video_renderer_var.get(), native_resolution=native,
+            )
+            video.validate()
+        except (tk.TclError, TypeError, ValueError):
+            video = video_config_for_quality()
+        try:
+            video_stream = max(0, int(self.video_stream_var.get()))
+        except (tk.TclError, ValueError):
+            video_stream = 0
         return GuiSettings(
             last_input_dir=str(input_path.parent) if input_path else self.settings.last_input_dir,
             output_dir=self.output_var.get() or "output",
@@ -1449,6 +2029,15 @@ class Wav2McApp:
             selected_profiles=tuple(
                 name for name in DEFAULT_DEVICE_PACK_PROFILES if self.profile_vars[name].get()
             ),
+            video_enabled=self.video_enabled_var.get(),
+            video_width=video.width,
+            video_height=video.height,
+            video_fps=video.fps,
+            video_pixel_size=video.pixel_size,
+            video_stream=video_stream,
+            include_audio=self.include_audio_var.get(),
+            video_quality="native" if video.native_resolution else self.video_quality_var.get(),
+            video_renderer=video.renderer,
         )
 
     def _persist_settings(self) -> None:
@@ -1474,6 +2063,8 @@ class Wav2McApp:
     def _destroy(self) -> None:
         if self.destroyed:
             return
+        self._stop_preview()
+        self.preview_player.close()
         self._persist_settings()
         self.destroyed = True
         self.root.destroy()

@@ -221,6 +221,14 @@ def test_conversion_progress_is_monotonic_and_finishes_at_one(
     assert namespace == safe_namespace(namespace)
     with zipfile.ZipFile(outputs["data_pack"]) as archive:
         assert f"data/{namespace}/function/start.mcfunction" in archive.namelist()
+        song = json.loads(archive.read("wav2mc-song.json"))
+        assert report["playback"] == song["playback"]
+        playback = report["playback"]
+        assert playback["duration_ticks"] == report["frame_count"]
+        assert playback["duration_seconds"] == report["frame_count"] / 20
+        for command in playback["commands"].values():
+            function = command.removeprefix("/function ").replace(":", "/function/", 1)
+            assert f"data/{function}.mcfunction" in archive.namelist()
 
 
 def test_conversion_cancel_during_datapack_preserves_outputs(tmp_path: Path) -> None:

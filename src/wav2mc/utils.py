@@ -95,13 +95,20 @@ def safe_output_name(value: str) -> str:
     return cleaned.encode("utf-8")[:180].decode("utf-8", errors="ignore").rstrip(" .")
 
 
-def conversion_output_paths(output_dir: Path, song_name: str) -> dict[str, Path]:
+def conversion_output_paths(
+    output_dir: Path,
+    song_name: str,
+    include_video_resource_pack: bool = False,
+) -> dict[str, Path]:
     name = safe_output_name(song_name)
-    return {
+    paths = {
         "data_pack": output_dir / f"{name}_datapack.zip",
         "preview": output_dir / f"{name}_preview.wav",
         "report": output_dir / f"{name}_analysis.json",
     }
+    if include_video_resource_pack:
+        paths["video_resource_pack"] = output_dir / f"{name}_video_resourcepack.zip"
+    return paths
 
 
 def ensure_command(name: str) -> str:

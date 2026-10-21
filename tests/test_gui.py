@@ -1,6 +1,9 @@
+import json
 import threading
 import time
+import wave
 from pathlib import Path
+from types import SimpleNamespace
 
 import tkinter as tk
 
@@ -13,6 +16,7 @@ from wav2mc.audio import AudioStreamInfo, MediaInfo
 from wav2mc.cli import main
 from wav2mc.config import DEFAULT_DEVICE_PACK_PROFILES
 from wav2mc.gui_state import GuiSettings, save_gui_settings
+from wav2mc.preview_player import PreviewPlayer
 from wav2mc.utils import TaskCancelled
 
 
@@ -60,6 +64,26 @@ def test_gui_mode_load_and_result_command() -> None:
     assert gui.result_function_command({"song_namespace": "My Song!"}) == (
         "/function my_song:start"
     )
+
+
+def test_game_command_menu_only_offers_commands_present_in_report() -> None:
+    report = {
+        "song_namespace": "song",
+        "playback": {
+            "commands": {
+                "start": "/function song:start",
+                "pause": "/function song:pause",
+                "unknown": "/function song:unknown",
+            },
+        },
+    }
+    assert gui.result_function_commands(report) == {
+        "start": "/function song:start",
+        "pause": "/function song:pause",
+    }
+    assert gui.result_function_command(report, "pause") == "/function song:pause"
+    with pytest.raises(ValueError, match="重新转换"):
+        gui.result_function_command({"song_namespace": "song"}, "pause")
 
 
 def test_gui_conversion_output_paths_preserve_song_name(tmp_path: Path) -> None:
@@ -179,4 +203,109 @@ def test_gui_ignores_stale_probe_and_cancels_worker(tmp_path: Path) -> None:
     app.last_report = {"song_namespace": "demo_song"}
     app._copy_result_command()
     assert root.clipboard_get() == "/function demo_song:start"
+    app._destroy()
+
+
+def _preview_outputs(tmp_path: Path) -> dict[str, Path]:
+    preview = tmp_path / "preview.wav"
+    with wave.open(str(preview), "wb") as output:
+        output.setnchannels(1)
+        output.setsampwidth(2)
+        output.setframerate(100)
+        output.writeframes(b"\x00\x00" * 1000)
+    report = tmp_path / "report.json"
+    report.write_text(json.dumps({
+        "song_namespace": "song",
+        "playback": {"commands": {
+            "start": "/function song:start",
+            "pause": "/function song:pause",
+        }},
+    }), encoding="utf-8")
+    return {"preview": preview, "report": report}
+
+
+def test_gui_controls_preview_and_copies_selected_game_command(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    now = [10.0]
+    processes = []
+
+    class Process:
+        returncode = None
+
+        def poll(self) -> int | None:
+            return self.returncode
+
+        def terminate(self) -> None:
+            self.returncode = -15
+
+        def wait(self, timeout: float | None = None) -> int:
+            return self.returncode
+
+    def spawn(*_args: object, **_kwargs: object) -> Process:
+        process = Process()
+        processes.append(process)
+        return process
+
+    player = PreviewPlayer(
+        executable="ffplay",
+        process_factory=spawn,  # type: ignore[arg-type]
+        clock=lambda: now[0],
+    )
+    monkeypatch.setattr(gui, "PreviewPlayer", lambda: player)
+    root = _tk_root()
+    app = gui.Wav2McApp(root, settings_path=tmp_path / "settings.json")
+    app._conversion_finished(_preview_outputs(tmp_path))
+    assert app.command_menu.index(tk.END) == 1
+    app.command_menu.invoke(1)
+    assert root.clipboard_get() == "/function song:pause"
+    app._play_preview()
+    assert player.state == "playing" and app.preview_after is not None
+    assert app.preview_play_button.cget("text") == "暂停"
+    app._begin_preview_seek(SimpleNamespace())  # type: ignore[arg-type]
+    app.preview_position_var.set(6)
+    app._preview_seek_changed("6")
+    now[0] += 1
+    app._poll_preview()
+    assert len(processes) == 1
+    assert app.preview_position_var.get() == 6
+    app._commit_preview_seek(SimpleNamespace(type=tk.EventType.ButtonRelease))  # type: ignore[arg-type]
+    assert len(processes) == 2 and player.position == 6
+    app._play_preview()
+    assert player.state == "paused" and app.preview_after is None
+    assert app.preview_play_button.cget("text") == "继续"
+    app._play_preview()
+    assert player.state == "playing"
+    processes[-1].returncode = 0
+    app._poll_preview()
+    assert player.state == "finished" and app.preview_after is None
+    assert app.preview_play_button.cget("text") == "试听"
+    app._play_preview()
+    app._dismiss_result()
+    assert player.state == "stopped" and player.position == 0
+    assert app.preview_after is None
+    assert all(process.returncode is not None for process in processes)
+    app._play_preview()
+    app._destroy()
+    assert processes[-1].returncode == -15
+    assert app.preview_after is None
+
+
+def test_gui_missing_ffplay_uses_external_player_and_disables_inline_controls(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    player = PreviewPlayer()
+    player.executable = None
+    monkeypatch.setattr(gui, "PreviewPlayer", lambda: player)
+    root = _tk_root()
+    app = gui.Wav2McApp(root, settings_path=tmp_path / "settings.json")
+    outputs = _preview_outputs(tmp_path)
+    app._conversion_finished(outputs)
+    opened = []
+    monkeypatch.setattr(app, "_open_path", lambda path, create: opened.append(path))
+    app._play_preview()
+    assert opened == [outputs["preview"]]
+    assert "未找到 ffplay" in app.status_var.get()
+    assert str(app.preview_seek.cget("state")) == "disabled"
+    assert app.preview_after is None
     app._destroy()

@@ -17,10 +17,13 @@ from .audio import (
 )
 from .config import (
     DEFAULT_MINECRAFT_VERSION,
+    DEFAULT_RESOURCE_PACK_FORMAT,
     AudioConfig,
     LoudnessCalibration,
     QualityProfile,
+    VideoConfig,
     audio_config_metadata,
+    video_renderer,
 )
 from .datapack import STEREO_SOURCE_OFFSET, build_data_pack
 from .loudness import (
@@ -28,6 +31,10 @@ from .loudness import (
     minecraft_command_volume,
     predicted_minecraft_amplitude,
 )
+from .playback import playback_metadata
+from .video import open_video_frames
+from .video_datapack import video_metadata
+from .video_texture import write_video_resource_pack
 from .preview import (
     calculate_safe_scale,
     synthesize_preview,
@@ -330,6 +337,10 @@ def convert_audio(
     progress_callback: ProgressCallback | None = None,
     cancel_check: CancelCheck | None = None,
     preview_resource_pack: Path | None = None,
+    video_config: VideoConfig | None = None,
+    video_stream: int = 0,
+    include_audio: bool = True,
+    video_resource_pack_format: float = DEFAULT_RESOURCE_PACK_FORMAT,
 ) -> dict[str, Path]:
     calibration = loudness_calibration or LoudnessCalibration()
     calibration.validate()
@@ -339,6 +350,19 @@ def convert_audio(
         raise ValueError("requested_gain must be positive")
     if not 0.0 < bank_grain_level <= 1.0:
         raise ValueError("bank_grain_level must be in (0, 1]")
+    if video_config is not None:
+        video_config.validate()
+        if data_pack_format < 12:
+            raise ValueError("Display-entity video requires Minecraft Java 1.19.4 or newer")
+        if config.hop_size * 20 != config.sample_rate:
+            raise ValueError("Synchronized video requires a 50 ms audio hop")
+    elif not include_audio:
+        raise ValueError("Disabling audio requires video conversion")
+    texture_video = video_config is not None and video_renderer(video_config) == "texture"
+    if texture_video and (
+        not np.isfinite(video_resource_pack_format) or video_resource_pack_format <= 0
+    ):
+        raise ValueError("video_resource_pack_format must be finite and positive")
 
     output_dir.mkdir(parents=True, exist_ok=True)
     namespace = song_namespace(song_name)
@@ -347,7 +371,9 @@ def convert_audio(
         report_source = str(resolved_source.relative_to(Path.cwd().resolve()))
     except ValueError:
         report_source = str(resolved_source)
-    output_paths = conversion_output_paths(output_dir, song_name)
+    output_paths = conversion_output_paths(
+        output_dir, song_name, include_video_resource_pack=texture_video,
+    )
     data_pack_path = output_paths["data_pack"]
     preview_path = output_paths["preview"]
     report_path = output_paths["report"]
@@ -356,56 +382,59 @@ def convert_audio(
     duration_seconds = None
     try:
         duration_seconds = probe_media(source).duration
-    except (OSError, RuntimeError):
-        pass
+    except (OSError, RuntimeError) as exc:
+        if video_config is not None and str(exc).startswith("No audio stream found"):
+            include_audio = False
 
     with temporary_directory(
         ".wav2mc-convert-",
         directory=output_dir,
     ) as temp, ExitStack() as stack:
+        video = None
+        if video_config is not None:
+            video = stack.enter_context(open_video_frames(
+                source, video_config, video_stream,
+                progress_callback=scaled_progress(progress_callback, 0.0, 0.12),
+                cancel_check=cancel_check,
+            ))
+            progress_callback = scaled_progress(progress_callback, 0.12, 1.0)
         bank_lookup = stack.enter_context(open_preview_bank(
             preview_resource_pack, config, bank_namespace, bank_grain_level,
-        )) if preview_resource_pack is not None else None
+        )) if preview_resource_pack is not None and include_audio else None
         decoded = temp / "decoded.wav"
-        staged_paths = {
-            "data_pack": temp / data_pack_path.name,
-            "preview": temp / preview_path.name,
-            "report": temp / report_path.name,
-        }
-        preprocess_audio(
-            source,
-            decoded,
-            sample_rate=config.sample_rate,
-            low_frequency=max(20, config.min_frequency // 2),
-            high_frequency=min(config.max_frequency, config.sample_rate // 2 - 100),
-            audio_stream=audio_stream,
-            channels=2 if preserve_stereo else 1,
-            duration_seconds=duration_seconds,
-            progress_callback=scaled_progress(
-                progress_callback,
-                0.0,
-                0.12,
-                "decode",
-            ),
-            cancel_check=cancel_check,
-        )
-        audio = load_audio(decoded, config.sample_rate)
-        audio = peak_normalize(audio, target_peak=0.92)
+        staged_paths = {label: temp / path.name for label, path in output_paths.items()}
+        if include_audio:
+            preprocess_audio(
+                source,
+                decoded,
+                sample_rate=config.sample_rate,
+                low_frequency=max(20, config.min_frequency // 2),
+                high_frequency=min(config.max_frequency, config.sample_rate // 2 - 100),
+                audio_stream=audio_stream,
+                channels=2 if preserve_stereo else 1,
+                preserve_timestamps=video is not None,
+                duration_seconds=duration_seconds,
+                progress_callback=scaled_progress(
+                    progress_callback, 0.0, 0.12, "decode",
+                ),
+                cancel_check=cancel_check,
+            )
+            audio = peak_normalize(load_audio(decoded, config.sample_rate), target_peak=0.92)
+            frames = _analyse_channels(
+                audio, config, quality, psychoacoustic_masking,
+                progress_callback=scaled_progress(
+                    progress_callback, 0.12, 0.62, "analyse",
+                ),
+                cancel_check=cancel_check,
+            )
+        else:
+            assert video is not None
+            audio = np.zeros(
+                max(1, round(video.duration_seconds * config.sample_rate)), dtype=np.float32,
+            )
+            frames = [AudioFrame(index, ()) for index in range(video.tick_count)]
+            emit_progress(progress_callback, "analyse", 0.62, "Video without audio")
         check_cancelled(cancel_check)
-
-        frames = _analyse_channels(
-            audio,
-            config,
-            quality,
-            psychoacoustic_masking,
-            progress_callback=scaled_progress(
-                progress_callback,
-                0.12,
-                0.62,
-                "analyse",
-            ),
-            cancel_check=cancel_check,
-        )
         tone_frames = [replace(frame, residual_components=()) for frame in frames]
         stereo = audio.ndim == 2
         tone_preview = synthesize_preview(
@@ -493,6 +522,23 @@ def convert_audio(
             "Preview written",
         )
 
+        if video is not None and video.tick_count > len(target_frames):
+            target_frames.extend(
+                AudioFrame(index, ()) for index in range(len(target_frames), video.tick_count)
+            )
+
+        if texture_video:
+            assert video is not None
+            write_video_resource_pack(
+                staged_paths["video_resource_pack"], namespace, video,
+                video_resource_pack_format,
+                progress_callback=scaled_progress(
+                    progress_callback, 0.84, 0.90, "video_resource_pack",
+                ),
+                cancel_check=cancel_check,
+                data_pack_format=data_pack_format,
+            )
+
         build_data_pack(
             staged_paths["data_pack"],
             frames=target_frames,
@@ -505,11 +551,12 @@ def convert_audio(
             loudness_calibration=calibration,
             progress_callback=scaled_progress(
                 progress_callback,
-                0.84,
+                0.90 if texture_video else 0.84,
                 0.96,
                 "datapack",
             ),
             cancel_check=cancel_check,
+            video=video,
         )
 
         tone_counts = np.asarray(
@@ -571,10 +618,15 @@ def convert_audio(
                         - component.amplitude
                     )
                 )
+        playback = playback_metadata(namespace, len(target_frames))
+        video_description = video_metadata(namespace, video, data_pack_format) if video is not None else None
+        if video_description is not None:
+            playback["commands"].update(video_description["commands"])
         report = {
             "minecraft_version": DEFAULT_MINECRAFT_VERSION,
             "source": report_source,
-            "input_audio_stream": audio_stream,
+            "input_audio_stream": audio_stream if include_audio else None,
+            "audio_enabled": include_audio,
             "song_namespace": namespace,
             "song_name": song_name,
             "input_duration_seconds": round(
@@ -585,7 +637,7 @@ def convert_audio(
                 preview.shape[0] / config.sample_rate,
                 6,
             ),
-            "input_channels": 2 if audio.ndim == 2 else 1,
+            "input_channels": (2 if audio.ndim == 2 else 1) if include_audio else 0,
             "output_channels": 2 if preview.ndim == 2 else 1,
             "stereo": {
                 "enabled": audio.ndim == 2,
@@ -594,8 +646,10 @@ def convert_audio(
                     STEREO_SOURCE_OFFSET if audio.ndim == 2 else 0.0
                 ),
             },
-            "frame_count": len(frames),
+            "frame_count": len(target_frames),
             "tick_rate": 20,
+            "playback": playback,
+            "video": video_description,
             "quality": quality.name,
             "quality_profile": {
                 "max_components": quality.max_components,
@@ -706,26 +760,18 @@ def convert_audio(
                 **audio_config_metadata(config),
                 "grain_level": bank_grain_level,
                 "device_profile": device_profile,
-            },
+            } if include_audio else None,
             "data_pack": {
                 "pack_format": data_pack_format,
                 "layout": layout,
                 "category": category,
             },
-            "outputs": {
-                "data_pack": data_pack_path.name,
-                "preview": preview_path.name,
-                "report": report_path.name,
-            },
+            "outputs": {label: path.name for label, path in output_paths.items()},
         }
         write_json(staged_paths["report"], report)
         check_cancelled(cancel_check)
 
-        final_paths = {
-            "data_pack": data_pack_path,
-            "preview": preview_path,
-            "report": report_path,
-        }
+        final_paths = output_paths
         backup_dir = temp / "backups"
         backup_dir.mkdir()
         committed: list[Path] = []
@@ -748,8 +794,4 @@ def convert_audio(
 
         emit_progress(progress_callback, "report", 1.0, "Conversion complete")
 
-    return {
-        "data_pack": data_pack_path,
-        "preview": preview_path,
-        "report": report_path,
-    }
+    return output_paths

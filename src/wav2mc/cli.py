@@ -13,12 +13,16 @@ from .config import (
     DEFAULT_LAYOUT,
     DEFAULT_MINECRAFT_VERSION,
     DEFAULT_RESOURCE_PACK_FORMAT,
+    DEFAULT_VIDEO_QUALITY,
     QUALITY_PROFILES,
+    VIDEO_QUALITY_PROFILES,
     AudioConfig,
     LoudnessCalibration,
     device_audio_config,
+    video_config_for_quality,
 )
 from .pipeline import convert_audio
+from .utils import song_namespace
 
 
 def _add_audio_config(parser: argparse.ArgumentParser) -> None:
@@ -170,7 +174,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     convert_parser = subparsers.add_parser(
         "convert",
-        help="Convert any FFmpeg-supported audio file",
+        help="Convert audio, or video with display entities using --video",
     )
     convert_parser.add_argument(
         "input",
@@ -182,6 +186,45 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=0,
         help="Zero-based audio stream index for media containers",
+    )
+    video_options = convert_parser.add_argument_group("display-entity video")
+    video_options.add_argument(
+        "--video", action="store_true",
+        help="Render video as a full-color text_display screen synchronized with audio",
+    )
+    video_options.add_argument(
+        "--video-quality", choices=tuple(VIDEO_QUALITY_PROFILES), default=None,
+        help=f"Video resolution/frame-rate preset (default: {DEFAULT_VIDEO_QUALITY})",
+    )
+    video_options.add_argument(
+        "--video-width", type=int, default=None,
+        help="Override the video preset's pixel columns",
+    )
+    video_options.add_argument(
+        "--video-height", type=int, default=None,
+        help="Override the video preset's pixel rows",
+    )
+    video_options.add_argument(
+        "--video-fps", type=int, choices=(1, 2, 4, 5, 10, 20), default=None,
+        help="Override the video preset's frames per second",
+    )
+    video_options.add_argument(
+        "--video-pixel-size", type=float, default=None,
+        help="Override the video preset's pixel side length in blocks",
+    )
+    video_options.add_argument(
+        "--video-renderer", choices=("auto", "pixels", "texture"), default="auto",
+        help="Screen renderer: auto uses tiled textures for large or native video",
+    )
+    video_options.add_argument(
+        "--video-resource-pack-format", type=float,
+        default=DEFAULT_RESOURCE_PACK_FORMAT,
+        help="Resource pack format for generated video textures",
+    )
+    video_options.add_argument("--video-stream", type=int, default=0, help="Zero-based video stream index")
+    video_options.add_argument(
+        "--audio", action=argparse.BooleanOptionalAction, default=True,
+        help="Keep video audio; --no-audio produces video without a sound bank",
     )
     convert_parser.add_argument("--name", default=None)
     convert_parser.add_argument("--output-dir", type=Path, default=Path("output"))
@@ -264,6 +307,8 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+    if args.command == "convert" and args.video_quality is not None and not args.video:
+        parser.error("--video-quality requires --video")
 
     try:
         if args.command == "gui":
@@ -352,9 +397,25 @@ def main(argv: list[str] | None = None) -> int:
                 audio_stream=args.audio_stream,
                 preserve_stereo=args.stereo,
                 preview_resource_pack=args.preview_resource_pack,
+                video_config=video_config_for_quality(
+                    args.video_quality or DEFAULT_VIDEO_QUALITY,
+                    width=args.video_width,
+                    height=args.video_height,
+                    fps=args.video_fps,
+                    pixel_size=args.video_pixel_size,
+                    renderer=args.video_renderer,
+                ) if args.video else None,
+                video_stream=args.video_stream,
+                include_audio=args.audio,
+                video_resource_pack_format=args.video_resource_pack_format,
             )
             for label, path in outputs.items():
                 print(f"{label}: {path.resolve()}")
+            namespace = song_namespace(song_name)
+            print(f"Minecraft: /function {namespace}:start")
+            print(f"Playback controls: /function {namespace}:help")
+            if args.video:
+                print(f"Place screen: /function {namespace}:video/screen_create")
             return 0
 
         parser.error("Unknown command")

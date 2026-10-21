@@ -1,6 +1,6 @@
 # wav2mc 基础项目
 
-把 WAV 或 FFmpeg 支持的其他音频文件转换成 Minecraft Java 数据包，并通过一个可复用的混合颗粒资源包播放。
+把 WAV 或 FFmpeg 支持的其他媒体文件转换成 Minecraft Java 数据包，通过可复用的混合颗粒资源包播放音频，并可用展示实体同步播放全彩视频。
 
 > 从安装到游戏内播放的完整步骤、参数解释与故障排查，请阅读 [详细使用指南](docs/usage.md)。
 
@@ -24,7 +24,10 @@
 - 通用正弦、噪声和瞬态混合资源包 ZIP；
 - 自适应频率网格和 `voice` / `normal` / `high` / `experimental` 四档资源包集；
 - 可执行转换和资源包生成的 Tkinter 桌面 GUI；
-- scoreboard 播放器和分层帧分发，避免长 `schedule` 链。
+- 每首歌独立的 scoreboard 播放器和分层帧分发，避免多数据包互相干扰；
+- 暂停/继续、跳转、循环、进度查询和多人同步收听；
+- 桌面预览的播放、暂停、停止和进度拖动（需 FFplay）。
+- `text_display` 全彩像素视频屏幕，与音频共用暂停、跳转和循环时间轴。
 
 ## 默认目标
 
@@ -43,12 +46,13 @@
 
 - Python 3.10+
 - FFmpeg，且 `ffmpeg` 命令可在 PATH 中使用
+- FFplay（可选，用于 GUI 内可控制的试听；缺少时可用系统播放器打开预览）
 - Tk 8.6+（仅 GUI 需要；部分 Linux 发行版需另装 `python3-tk`）
 - Python 包：NumPy、SoundFile
 
 ## 输入格式
 
-`convert` 接受本机 FFmpeg 能够解码的任意音频或媒体文件，例如 WAV、MP3、FLAC、M4A/AAC、OGG/Vorbis、Opus、AIFF，以及含音轨的 MP4/MKV。容器有多条音轨时可用 `--audio-stream` 选择，视频、字幕和数据流会被忽略。实际格式范围取决于已安装的 FFmpeg 构建。
+`convert` 接受本机 FFmpeg 能够解码的任意音频或媒体文件，例如 WAV、MP3、FLAC、M4A/AAC、OGG/Vorbis、Opus、AIFF，以及 MP4/MKV。容器有多条音轨时可用 `--audio-stream` 选择；默认只转换音频，添加 `--video` 可同步转换视频画面。实际格式范围取决于已安装的 FFmpeg 构建。
 
 立体声默认保留：左右声道独立分析，本地预览写成双声道 WAV，数据包把左右颗粒放在玩家朝向两侧 0.75 格。双单声道输入会自动折叠，避免无意义地重复命令。性能不足时使用 `--no-stereo` 强制下混为单声道；立体声不增加资源包文件，现有匹配档位的资源包可以继续使用。
 
@@ -92,7 +96,7 @@ wav2mc gui input.m4s --output-dir output
 
 GUI 使用紧凑的双栏转换工作台。选择媒体后会异步显示时长、编码、采样率、声道和可用音轨；常用区提供四档模式与 -24～+12 dB 滑块，音轨、立体声和心理声学选项收在“高级设置”中。转换和资源包生成显示真实进度，主按钮可安全取消；所有正式输出只在任务完整成功后替换。
 
-转换完成后，窗口内结果栏会显示时长、声道、预览峰值、实际命令数和资源包匹配状态，并可直接试听、打开目录或复制 `/function <namespace>:start`。资源包页可多选任意档位生成，并标记“有效 / 缺失 / 参数不匹配”。界面会自动记住目录、模式、增益和高级选项。重新执行 `pip install -e .` 后，也可直接运行 `wav2mc-gui`。
+转换完成后，窗口内结果栏会显示时长、声道、预览峰值、实际命令数和资源包匹配状态。试听支持播放/暂停、停止和进度拖动；“命令”菜单提供游戏内开始、暂停、继续、跳转和多人收听等命令。资源包页可多选任意档位生成，并标记“有效 / 缺失 / 参数不匹配”。界面会自动记住目录、模式、增益和高级选项。重新执行 `pip install -e .` 后，也可直接运行 `wav2mc-gui`。
 
 GUI 使用推荐模式预设，确保数据包和资源包 namespace、频率与相位一致。自定义频率网格、Minecraft 响度模型或旧版布局时仍使用 CLI。
 
@@ -258,7 +262,60 @@ wav2mc convert input.wav --no-hybrid-residual --bank-namespace wav2mc
 /function demo_song:stop
 ```
 
-`start` 默认只把执行命令的玩家标记为监听者。再次从另一名玩家执行会切换监听者。
+`start` 从头播放并将执行者设为监听者；再次执行会重开本曲。其他玩家用 `join` 同步加入，不会重置进度；`start_all` 则从头为所有在线玩家播放。
+
+| 功能 | 命令（以 `demo_song` 为例） |
+| --- | --- |
+| 暂停 / 继续 | `/function demo_song:pause` / `/function demo_song:resume` |
+| 前进 / 后退 10 秒 | `/function demo_song:seek_forward` / `/function demo_song:seek_backward` |
+| 开启 / 关闭循环 | `/function demo_song:loop_on` / `/function demo_song:loop_off` |
+| 查询状态、进度 | `/function demo_song:status` |
+| 加入 / 离开收听 | `/function demo_song:join` / `/function demo_song:leave` |
+| 所有在线玩家收听 | `/function demo_song:start_all` |
+| 查看完整控制说明 | `/function demo_song:help` |
+
+任意位置跳转、控制台执行和多歌曲共存的说明见[详细使用指南](docs/usage.md#播放控制)。生成的数据包和分析报告都包含 `playback` 字段，可查到本曲的计分板名称、时长和完整命令。旧数据包需重新转换才会获得这些功能，匹配的资源包可继续使用。
+
+## 展示实体视频
+
+将视频画面和音轨一起转换：
+
+```bash
+wav2mc convert input.mp4 --video --mode normal --name demo_video
+```
+
+安装数据包、生成的视频资源包和匹配的音频资源包后，运行 `/function demo_video:start`。屏幕会出现在执行玩家前方约 3 格，固定在世界中。没有音轨的视频会自动转为无声视频，也可显式添加 `--no-audio`。
+
+视频画质已提高，并加入原分辨率：
+
+| 画质 | 参数值 | 分辨率 | FPS | 自动渲染方式 |
+| --- | --- | --- | ---: | --- |
+| 低 | `low` | 64×36 | 10 | 逐像素背景 |
+| 普通（默认） | `normal` | 160×90 | 10 | 分块纹理 |
+| 高 | `high` | 320×180 | 20 | 分块纹理 |
+| 超高 | `ultra` | 640×360 | 20 | 分块纹理 |
+| 原分辨率 | `native` | 跟随源视频 | 20 | 分块纹理 |
+
+固定分辨率档屏幕为 3.2×1.8 格；原分辨率宽 3.2 格，高度保持源视频显示比例，不进行空间缩放：
+
+```bash
+wav2mc convert input.mp4 --video --video-quality native --mode normal
+```
+
+`--video-quality` 控制画面，`--mode` 控制音频。纹理模式将原始 RGB 画面按 256×256 分块交给 `text_display` 显示，1920×1080 只需 40 个画面实体和 1 个定位实体。输出的 `*_video_resourcepack.zip` 必须放入客户端资源包目录并启用；音频资源包仍独立复用。无声音轨时不需要音频资源包。
+
+只使用无需视频资源包的逐像素模式时，可选择低档：
+
+```bash
+wav2mc convert input.mp4 --video --no-audio \
+  --video-quality low
+```
+
+分辨率、帧率和像素边长仍可单独覆盖档位参数，`--video-renderer texture` 可强制纹理模式。原分辨率保持自动旋转后的像素网格，帧率仍受 Minecraft 20 tick/s 限制；长视频的资源包和客户端纹理缓存可能很大。GUI 显示实际实体数、更新量和纹理缓存估算，旧自定义参数保留。
+
+用 `/function demo_video:video/screen_create` 在当前位置前方重建屏幕，`video/screen_remove` 移除屏幕。暂停保留画面，停止或 `/reload` 清理屏幕。GUI 的“视频（展示实体）”选项提供相同参数，命令菜单也可复制屏幕操作。
+
+视频要求 Minecraft Java 1.19.4+，默认仍为 26.3。支持主世界、下界和末地，屏幕所在区块需保持加载。详细参数和性能说明见[视频指南](docs/usage.md#展示实体视频)。
 
 ## 质量档位
 
@@ -327,7 +384,7 @@ wav2mc convert test_tone.wav --name test_tone --max-frequency 2000
 - 游戏内立体声依赖两个头部相对的单声道声源和客户端空间混音，不是逐采样、无串音的双声道输出。
 - 混合残差能补充瞬态和噪声纹理，但有限组件预算仍会产生声码器感。
 - 同时播放大量声音可能受客户端声音通道、混音器或性能影响。
-- 手动执行 `stop` 会立即停止 `record` 分类声音，可能切断正在播放的最后一个颗粒。
+- 暂停、跳转和停止会停止本曲使用的声音事件；自然结束保留尾音。Minecraft 按声音事件停止音频，同一玩家同时收听使用相同颗粒事件的其他歌曲时，重叠颗粒也可能被切断。
 
 ## 推荐开发方向
 
@@ -336,7 +393,7 @@ wav2mc convert test_tone.wav --name test_tone --max-frequency 2000
 3. （已完成）增加心理声学掩蔽，而不是单纯按幅度选峰。
 4. （已完成）生成多套分频资源包，按设备性能选择。
 5. （已完成）增加通用瞬态与随机残差层，改善任意音频的快速起音和高频纹理。
-6. 增加游戏内进度、暂停、跳转和多监听者控制。
+6. （已完成）增加游戏内进度、暂停、跳转、循环和多监听者控制。
 7. 编写 Fabric 客户端模组，提供更准确的音频调度；数据包模式仍保留为兼容后端。
 
 ## 项目结构
@@ -354,6 +411,11 @@ src/wav2mc/
 ├── grains.py     确定性残差颗粒
 ├── loudness.py   Minecraft 响度校准模型
 ├── pipeline.py   转换流程
+├── playback.py   游戏播放状态标识和控制命令元数据
 ├── preview.py    本地重建预览
+├── preview_player.py  FFplay 试听控制
+├── video.py      FFmpeg 视频流探测与逐帧解码
+├── video_datapack.py  RGB 展示实体屏幕和视频帧函数
+├── video_texture.py   原分辨率纹理与位图字体资源包
 └── utils.py      通用工具
 ```

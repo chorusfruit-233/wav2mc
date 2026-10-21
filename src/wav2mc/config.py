@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, replace
 
 
@@ -335,3 +336,138 @@ DEFAULT_MINECRAFT_VERSION = "26.3"
 DEFAULT_RESOURCE_PACK_FORMAT = 97.1
 DEFAULT_DATA_PACK_FORMAT = 121.0
 DEFAULT_LAYOUT = "modern"
+
+
+@dataclass(frozen=True)
+class VideoConfig:
+    width: int | None = 32
+    height: int | None = 18
+    fps: int = 10
+    pixel_size: float | None = 0.1
+    renderer: str = "auto"
+    native_resolution: bool = False
+    pixel_aspect_ratio: float = 1.0
+
+    def validate(self) -> None:
+        if not isinstance(self.native_resolution, bool):
+            raise ValueError("native_resolution must be a boolean")
+        if self.renderer not in ("auto", "pixels", "texture"):
+            raise ValueError("Video renderer must be auto, pixels or texture")
+        for value in (self.width, self.height):
+            if value is None and self.native_resolution:
+                continue
+            if not isinstance(value, int) or isinstance(value, bool) or value < 1:
+                raise ValueError("Video width and height must be positive integers")
+        if (
+            self.renderer == "pixels"
+            and self.width is not None and self.height is not None
+            and self.width * self.height > 4096
+        ):
+            raise ValueError("The pixels renderer supports at most 4096 display entities; use texture or auto")
+        if (
+            not isinstance(self.fps, int) or isinstance(self.fps, bool)
+            or self.fps not in (1, 2, 4, 5, 10, 20)
+        ):
+            raise ValueError("Video fps must be one of 1, 2, 4, 5, 10, 20")
+        if (
+            isinstance(self.pixel_aspect_ratio, bool)
+            or not isinstance(self.pixel_aspect_ratio, (int, float))
+            or not math.isfinite(self.pixel_aspect_ratio)
+            or self.pixel_aspect_ratio <= 0
+        ):
+            raise ValueError("Video pixel aspect ratio must be finite and positive")
+        if self.pixel_size is None and self.native_resolution:
+            return
+        if (
+            isinstance(self.pixel_size, bool)
+            or not isinstance(self.pixel_size, (int, float))
+            or not math.isfinite(self.pixel_size)
+            or not 0.0 < self.pixel_size <= 2.0
+        ):
+            raise ValueError("Video pixel size must be finite and between 0 and 2 blocks")
+
+    @property
+    def ticks_per_frame(self) -> int:
+        return 20 // self.fps
+
+    @property
+    def pixel_height(self) -> float | None:
+        return None if self.pixel_size is None else self.pixel_size / self.pixel_aspect_ratio
+
+
+@dataclass(frozen=True)
+class VideoQualityProfile:
+    name: str
+    label: str
+    width: int | None
+    height: int | None
+    fps: int
+    pixel_size: float | None
+
+
+DEFAULT_VIDEO_QUALITY = "normal"
+VIDEO_TILE_SIZE = 256
+VIDEO_QUALITY_PROFILES: dict[str, VideoQualityProfile] = {
+    "low": VideoQualityProfile("low", "低", 64, 36, 10, 0.05),
+    "normal": VideoQualityProfile("normal", "普通", 160, 90, 10, 0.02),
+    "high": VideoQualityProfile("high", "高", 320, 180, 20, 0.01),
+    "ultra": VideoQualityProfile("ultra", "超高", 640, 360, 20, 0.005),
+    "native": VideoQualityProfile("native", "原分辨率", None, None, 20, None),
+}
+
+
+def video_config_for_quality(
+    quality: str = DEFAULT_VIDEO_QUALITY,
+    *,
+    width: int | None = None,
+    height: int | None = None,
+    fps: int | None = None,
+    pixel_size: float | None = None,
+    renderer: str | None = None,
+) -> VideoConfig:
+    """Apply a video preset, then any explicitly supplied rendering settings."""
+    try:
+        profile = VIDEO_QUALITY_PROFILES[quality]
+    except KeyError as exc:
+        raise ValueError(f"Unknown video quality: {quality}") from exc
+    native = quality == "native"
+    if native and (width is None) != (height is None):
+        raise ValueError("Overriding native resolution requires both video width and height")
+    if native and width is not None:
+        native = False
+        if pixel_size is None and isinstance(width, int) and not isinstance(width, bool) and width > 0:
+            pixel_size = 3.2 / width
+    config = VideoConfig(
+        width=profile.width if width is None else width,
+        height=profile.height if height is None else height,
+        fps=profile.fps if fps is None else fps,
+        pixel_size=profile.pixel_size if pixel_size is None else pixel_size,
+        renderer="auto" if renderer is None else renderer,
+        native_resolution=native,
+    )
+    config.validate()
+    return config
+
+
+def video_quality_name(config: VideoConfig) -> str:
+    """Identify the actual resolution and frame rate, independent of screen size."""
+    config.validate()
+    if config.native_resolution:
+        return "native"
+    for name, profile in VIDEO_QUALITY_PROFILES.items():
+        if (config.width, config.height, config.fps) == (
+            profile.width, profile.height, profile.fps,
+        ):
+            return name
+    return "custom"
+
+
+def video_renderer(config: VideoConfig) -> str:
+    """Choose a bounded entity renderer while retaining the requested resolution."""
+    config.validate()
+    if config.renderer != "auto":
+        return config.renderer
+    if config.native_resolution:
+        return "texture"
+    assert config.width is not None and config.height is not None
+    return "texture" if config.width * config.height > 4096 else "pixels"
